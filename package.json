@@ -1,0 +1,41 @@
+{
+  "name": "meeting-hear",
+  "private": true,
+  "packageManager": "pnpm@11.24.0",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "实时会议转写与 AI 纪要 — 本地 Whisper 流式识别 + 可配置 AI 总结",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "check": "pnpm typecheck && pnpm test:rust",
+    "dev": "vite",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:build": "tauri build",
+    "tauri:build:cuda": "tauri build -- --features cuda",
+    "tauri:build:openblas": "tauri build -- --features openblas",
+    "tauri:build:vulkan": "tauri build -- --features vulkan",
+    "tauri:dev": "tauri dev",
+    "test:e2e": "cargo test --manifest-path src-tauri/Cargo.toml --test e2e_pipeline -- --ignored --nocapture",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:ui": "node scripts/ui-smoke.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@tauri-apps/plugin-opener": "^2.5.5",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "playwright": "^1.63.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.9"
+  }
+}

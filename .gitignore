@@ -1,0 +1,22 @@
+# 依赖与构建产物
+node_modules
+dist
+dist-ssr
+*.local
+.vite
+src-tauri/target
+src-tauri/target-cuda
+src-tauri/gen
+
+# 端到端测试的本地素材（模型、音频，体积大，用 README 里的命令自行下载）
+.e2e/
+
+# 录音与导出
+recordings/
+*.wav.tmp
+
+# 编辑器 / 系统
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json

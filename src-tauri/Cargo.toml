@@ -1,0 +1,58 @@
+[package]
+name = "meeting-hear"
+version = "0.1.0"
+description = "实时会议转写与 AI 纪要：本地 Whisper 流式识别 + 可配置 AI 实时总结"
+authors = ["MeetingHear"]
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+default-run = "meeting-hear"
+
+[lib]
+name = "meeting_hear_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# ---- Tauri ----
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+
+# ---- 基础 ----
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+
+# ---- 异步 / HTTP（AI OpenAI 兼容接口 + 模型下载）----
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "gzip"] }
+futures-util = "0.3"
+
+# ---- 音频采集 ----
+cpal = "0.18"
+hound = "3.5"
+
+# ---- 平台专属：系统内录 ----
+# Windows: WASAPI loopback（抓取扬声器输出）
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.24"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 1
