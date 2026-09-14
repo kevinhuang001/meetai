@@ -956,7 +956,7 @@ async function main() {
     await sleep(300);
     check("f1b. sidebar 搜索框可过滤历史会话", searched >= 1, `匹配 ${searched} 条`);
 
-    // 回到录制视图，验证停止流程（详情页有「返回当前会议」，录制视图本来就在）
+    // 回到录制视图，验证停止流程（顶部返回按钮已删，从历史栏回不去就点左侧按钮）
     await waitFor(() => page.locator('[data-testid="stop-recording"]').isVisible(), {
       timeout: 8000,
       label: "等待回到录制视图",
@@ -1031,7 +1031,8 @@ async function main() {
     );
 
     /* ---------------------------------------------------------- 会话详情 */
-    await page.locator('[data-testid="goto-detail"]').click();
+    // 顶部返回按钮已删除，这里不再依赖「结束横幅 → 查看详情」，直接从历史栏打开
+    await page.locator(`[data-testid="sidebar-open-${sbId}"]`).click();
     await waitFor(() => page.locator('[data-testid="detail-title"]').isVisible(), {
       timeout: 8000,
       label: "等待会话详情",
@@ -1167,12 +1168,24 @@ async function main() {
     await sleep(300);
 
     /* ------------- 未配置识别服务时，开始录音要给出引导而不是静默失败 ------------- */
-    // 从会话详情点左侧「当前会议」回到录制视图（顶部返回按钮已删除）
+    // 从会话详情点左侧按钮回到录制视图（顶部返回按钮已删除）。
+    // 注意：没有正在录音时这个按钮等同于「新建会议」，会直接开录，
+    // 所以这里先切视图即可 —— 用「会议面板出现」判断，而不是「开始录音按钮出现」。
     await page.locator('[data-testid="sidebar-new-meeting"]').click();
-    await waitFor(() => page.locator('[data-testid="start-recording"]').isVisible(), {
+    await waitFor(() => page.locator('[data-testid="meeting-panel"]').isVisible().catch(() => false), {
       timeout: 8000,
       label: "等待回到录制视图",
     });
+    // 万一真的开了录音，先停掉，后面要验证「识别服务关掉时开始录音应给引导」
+    const stopNow = page.locator('[data-testid="stop-recording"]');
+    if (await stopNow.isVisible().catch(() => false)) {
+      await stopNow.click();
+      await waitFor(() => page.locator('[data-testid="start-recording"]').isVisible().catch(() => false), {
+        timeout: 15000,
+        interval: 300,
+        label: "等待停止完成",
+      }).catch(() => {});
+    }
 
     await page.locator('[data-testid="sidebar-settings"]').click();
     await waitFor(() => page.locator('[data-testid="settings-dialog"]').isVisible(), { timeout: 8000 });
