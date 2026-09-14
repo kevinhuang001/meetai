@@ -113,6 +113,7 @@ fn ollama_settings() -> AiSettings {
         temperature: 0.2,
         max_tokens: 800,
         json_mode: true,
+        no_thinking: true,
         timeout_secs: 120,
         extra_headers: Vec::new(),
     };

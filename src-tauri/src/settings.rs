@@ -236,6 +236,9 @@ pub struct AiProvider {
     pub temperature: f32,
     pub max_tokens: u32,
     pub json_mode: bool,
+    /// 请求时关闭「思考」（reasoning_effort=none）。
+    /// 纪要任务不需要思维链，而思考型模型会把 token 预算烧在推理上、正文为空。
+    pub no_thinking: bool,
     pub timeout_secs: u32,
     /// 额外请求头，例如自建网关需要的鉴权字段
     pub extra_headers: Vec<(String, String)>,
@@ -252,6 +255,7 @@ impl Default for AiProvider {
             temperature: 0.2,
             max_tokens: 1_200,
             json_mode: false,
+            no_thinking: true,
             timeout_secs: 60,
             extra_headers: Vec::new(),
         }

@@ -17,6 +17,7 @@ function providerFromPreset(preset: AiPreset): AiProvider {
     temperature: 0.2,
     maxTokens: 1200,
     jsonMode: preset.jsonMode,
+    noThinking: true,
     timeoutSecs: 60,
     extraHeaders: [],
   };

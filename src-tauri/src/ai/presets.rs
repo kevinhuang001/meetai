@@ -130,6 +130,8 @@ pub fn provider_from_preset(id: &str) -> AiProvider {
         temperature: 0.2,
         max_tokens: 1_200,
         json_mode,
+        // 纪要不需要思维链；思考型模型会把预算烧在推理上导致正文为空
+        no_thinking: true,
         timeout_secs: 60,
         extra_headers: Vec::new(),
     }

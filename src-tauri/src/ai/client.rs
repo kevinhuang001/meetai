@@ -111,6 +111,11 @@ impl ChatError {
         }
     }
 
+    /// 参数不被接受（400）：用于「换个参数再试一次」这类降级
+    fn is_bad_request(&self) -> bool {
+        matches!(self, ChatError::Status { code: 400, .. })
+    }
+
     fn is_retryable(&self) -> bool {
         match self {
             ChatError::Status { code, .. } => *code == 429 || *code >= 500,
@@ -200,10 +205,13 @@ impl AiClient {
         let mut use_json = provider.json_mode;
         let mut attempt = 0u32;
         let mut json_degraded = false;
+        // 关思考：先带上；被服务端拒绝（400）就摘掉重试
+        let mut no_thinking = provider.no_thinking;
+        let mut thinking_dropped = false;
 
         loop {
             attempt += 1;
-            let body = build_body(&provider, messages, max_tokens, use_json);
+            let body = build_body(&provider, messages, max_tokens, use_json, no_thinking);
             match self.post_once(&url, &provider, &body, timeout).await {
                 Ok(mut outcome) => {
                     outcome.latency_ms = started.elapsed().as_millis() as u64;
@@ -211,6 +219,13 @@ impl AiClient {
                     return Ok(outcome);
                 }
                 Err(err) => {
+                    // 服务端不认 reasoning_effort（严格校验参数的网关会返回 400）→ 摘掉重试
+                    if !thinking_dropped && no_thinking && err.is_bad_request() {
+                        tracing::info!("服务端不接受 reasoning_effort，去掉后重试");
+                        no_thinking = false;
+                        thinking_dropped = true;
+                        continue;
+                    }
                     // 服务商不支持 json_object → 去掉重试
                     if attempt == 1 && use_json && err.is_json_mode_rejection() {
                         tracing::info!("服务商不支持 response_format=json_object，降级重试");
@@ -394,6 +409,7 @@ fn build_body(
     messages: &[ChatMessage],
     max_tokens: Option<u32>,
     json_mode: bool,
+    no_thinking: bool,
 ) -> Value {
     let mut body = json!({
         "model": provider.model.trim(),
@@ -401,6 +417,12 @@ fn build_body(
         "temperature": provider.temperature,
         "stream": false,
     });
+    // 纪要不需要思维链。思考型模型（qwen3.x 等）默认会先把推理写满 token 预算，
+    // 真正的正文一个字都出不来 —— 用户看到的就是「模型返回内容为空」。
+    // reasoning_effort=none 是 OpenAI 兼容接口上通用的关思考方式（Ollama 也认）。
+    if no_thinking {
+        body["reasoning_effort"] = json!("none");
+    }
     let limit = max_tokens.unwrap_or(provider.max_tokens);
     if limit > 0 {
         body["max_tokens"] = json!(limit);
@@ -436,19 +458,26 @@ fn parse_chat_response(text: &str) -> AppResult<ChatOutcome> {
         .unwrap_or_default()
         .to_string();
 
-    // 部分推理模型把正文放在 reasoning_content，content 为空时兜底
-    let content = if content.trim().is_empty() {
-        message
-            .and_then(|m| m.get("reasoning_content"))
-            .and_then(|c| c.as_str())
-            .unwrap_or_default()
-            .to_string()
-    } else {
-        content
-    };
+    // 注意：**绝不能**把思维链当正文。
+    // 思考型模型（qwen3.x / deepseek-r1 等）会先输出一大段 reasoning，
+    // 把它当结果喂给 JSON 解析器只会得到一堆废字符串，还让用户以为「总结过了」。
+    // 这里只判断「是不是思考型模型」，然后给出说得清的错误。
+    let thinking = ["reasoning_content", "reasoning", "thinking"]
+        .iter()
+        .find_map(|k| message.and_then(|m| m.get(*k)).and_then(|c| c.as_str()))
+        .filter(|t| !t.trim().is_empty())
+        .map(str::to_string);
 
     if content.trim().is_empty() {
         let reason = choice.get("finish_reason").and_then(|x| x.as_str()).unwrap_or("");
+        if thinking.is_some() {
+            return Err(AppError::ai(
+                "这个模型是「思考型」模型：它把推理过程写在了 reasoning 字段里，正文为空。\
+                 纪要任务不需要推理，请在「设置 → AI 接口」里换一个非思考模型，\
+                 或确认该服务支持关闭思考（应用已默认请求 reasoning_effort=none）"
+                    .to_string(),
+            ));
+        }
         return Err(AppError::ai(if reason == "length" {
             "模型输出被 max_tokens 截断且内容为空，请调大 max_tokens".to_string()
         } else {
@@ -544,13 +573,13 @@ mod tests {
     fn body_includes_json_mode_and_limits() {
         let p = provider();
         let msgs = vec![ChatMessage::user("你好")];
-        let body = build_body(&p, &msgs, Some(64), true);
+        let body = build_body(&p, &msgs, Some(64), true, true);
         assert_eq!(body["response_format"]["type"], "json_object");
         assert_eq!(body["max_tokens"], 64);
         assert_eq!(body["stream"], false);
         assert_eq!(body["model"], "test-model");
 
-        let body = build_body(&p, &msgs, None, false);
+        let body = build_body(&p, &msgs, None, false, true);
         assert!(body.get("response_format").is_none());
         assert_eq!(body["max_tokens"], 1200);
     }
@@ -566,9 +595,33 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_reasoning_content() {
-        let raw = r#"{"choices":[{"message":{"content":"","reasoning_content":"思考结果"}}]}"#;
-        assert_eq!(parse_chat_response(raw).unwrap().content, "思考结果");
+    fn thinking_models_get_a_clear_error_instead_of_their_chain_of_thought() {
+        // 曾经这里把 reasoning_content 当正文兜底 —— 那是错的：
+        // 思考型模型的推理过程会被当成纪要内容，用户看到的是一堆「思考过程」。
+        // 现在只识别并给出说得清的错误。
+        for key in ["reasoning_content", "reasoning", "thinking"] {
+            let raw = format!(
+                r#"{{"choices":[{{"message":{{"content":"","{key}":"第一步，先分析用户意图…"}},"finish_reason":"length"}}]}}"#
+            );
+            let err = parse_chat_response(&raw).unwrap_err().to_string();
+            assert!(
+                err.contains("思考型"),
+                "{key} 字段应被识别为思考型模型，实际错误：{err}"
+            );
+            assert!(!err.contains("第一步"), "错误信息里不应回显思维链");
+        }
+    }
+
+    #[test]
+    fn thinking_is_disabled_by_default_on_the_wire() {
+        // 纪要不需要思维链，默认请求 reasoning_effort=none，
+        // 否则思考型模型会把 token 预算烧在推理上，正文为空。
+        let p = AiProvider { model: "qwen3.5:2b".into(), ..Default::default() };
+        let msgs = vec![ChatMessage::user("hi")];
+        let with = build_body(&p, &msgs, Some(64), true, true);
+        assert_eq!(with["reasoning_effort"], "none");
+        let without = build_body(&p, &msgs, Some(64), true, false);
+        assert!(without.get("reasoning_effort").is_none());
     }
 
     #[test]

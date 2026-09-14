@@ -65,6 +65,12 @@ export interface AiProvider {
   maxTokens: number;
   /** 是否发送 response_format={"type":"json_object"}，不支持的服务商会自动降级重试 */
   jsonMode: boolean;
+  /**
+   * 请求时关闭「思考」（reasoning_effort=none）。
+   * 纪要不需要思维链，思考型模型（qwen3.x 等）会把 token 预算烧在推理上、
+   * 正文一个字都不出。服务端不认这个参数时会自动摘掉重试。
+   */
+  noThinking: boolean;
   timeoutSecs: number;
   extraHeaders: [string, string][];
 }

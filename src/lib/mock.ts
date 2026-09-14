@@ -328,6 +328,7 @@ function defaultProvider(id: string): AiProvider {
     temperature: 0.2,
     maxTokens: 1200,
     jsonMode: p.jsonMode,
+    noThinking: true,
     timeoutSecs: 60,
     extraHeaders: [],
   };
