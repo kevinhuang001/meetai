@@ -42,10 +42,13 @@ pub(crate) fn build_form(
                 .mime_str("audio/wav")
                 .map_err(|e| AsrError::Transport(AppError::asr(e.to_string())))?,
         )
-        .text("model", provider.model.trim().to_string())
         .text("response_format", provider.response_format.clone())
         .text("temperature", format!("{:.2}", req.temperature));
 
+    // 模型名留空就不发这个字段（whisper.cpp server 本来也不看它）
+    if !provider.model.trim().is_empty() {
+        form = form.text("model", provider.model.trim().to_string());
+    }
     if let Some(prompt) = req.prompt.as_deref() {
         let prompt = prompt.replace('\0', " ");
         if !prompt.trim().is_empty() {
@@ -507,12 +510,22 @@ mod tests {
         let names = form_field_names(&dump);
         assert_eq!(
             names,
-            vec!["file", "model", "response_format", "temperature", "prompt"],
+            vec!["file", "response_format", "temperature", "model", "prompt"],
             "multipart 字段集合变了，请确认这是有意为之"
         );
         assert!(
             !names.contains(&"language"),
             "应用不得自行决定识别语言：语言由识别服务负责"
+        );
+
+        // 模型名留空时不应发送该字段（本地 whisper.cpp server 用不到它）
+        let bare = AsrProvider::default();
+        assert_eq!(bare.model, "");
+        let form = build_form(&bare, &req, vec![0u8; 8]).unwrap();
+        let dump = format!("{form:?}");
+        assert!(
+            !form_field_names(&dump).contains(&"model"),
+            "模型名为空时不应发送 model 字段"
         );
     }
 

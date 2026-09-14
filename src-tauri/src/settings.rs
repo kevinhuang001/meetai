@@ -90,8 +90,18 @@ impl AsrProvider {
         }
     }
 
+    /// 这个服务是否真的会用到「模型名」。
+    ///
+    /// whisper.cpp server 的 `/inference` 只认它启动时 `-m` 加载的那个模型，
+    /// 请求里的 model 字段它**完全忽略**。以前把它做成必填，用户就被卡在
+    /// 「模型名填什么」这种问题上过不去 —— 一个没有意义的值不该成为门槛。
+    pub fn model_is_required(&self) -> bool {
+        !self.transcription_path.trim_end_matches('/').ends_with("/inference")
+    }
+
+    /// 是否具备调用条件
     pub fn is_usable(&self) -> bool {
-        !self.host().is_empty() && !self.model.trim().is_empty()
+        !self.host().is_empty() && (!self.model_is_required() || !self.model.trim().is_empty())
     }
 
     pub fn sanitized(mut self) -> Self {
@@ -614,6 +624,39 @@ mod tests {
         let out = serde_json::to_string(&s).unwrap();
         assert!(!out.contains("language"));
         assert!(!out.contains("translateToEnglish"));
+    }
+
+    #[test]
+    fn model_name_is_optional_for_whisper_cpp_server() {
+        // whisper.cpp server 只认启动时 -m 加载的模型，请求里的 model 字段它不看。
+        // 以前把它做成必填，用户会被「模型名填什么」卡住。
+        let whisper_cpp = AsrProvider {
+            base_url: "http://127.0.0.1:8090".into(),
+            transcription_path: "/inference".into(),
+            model: String::new(),
+            ..Default::default()
+        };
+        assert!(!whisper_cpp.model_is_required());
+        assert!(whisper_cpp.is_usable(), "本地 whisper.cpp server 不应因为没填模型名而不可用");
+
+        // OpenAI 兼容接口必须给模型名，服务端会按名字挑模型
+        let openai = AsrProvider {
+            base_url: "https://api.openai.com/v1".into(),
+            transcription_path: "/audio/transcriptions".into(),
+            model: String::new(),
+            ..Default::default()
+        };
+        assert!(openai.model_is_required());
+        assert!(!openai.is_usable(), "云端服务没有模型名必须算配置不完整");
+
+        // 但地址本身还是必须的
+        let no_host = AsrProvider {
+            base_url: String::new(),
+            transcription_path: "/inference".into(),
+            model: String::new(),
+            ..Default::default()
+        };
+        assert!(!no_host.is_usable());
     }
 
     #[test]

@@ -87,7 +87,14 @@ export function AsrProviderEditor({
           </Button>
         </span>
       </Field>
-      <Field label="模型名" hint="例如 whisper-large-v3-turbo / whisper-1 / large-v3">
+      <Field
+        label="模型名"
+        hint={
+          provider.transcriptionPath.trim().replace(/\/$/, "").endsWith("/inference")
+            ? "可留空：whisper.cpp server 不校验模型名，它只认启动时 -m 指定的模型"
+            : "必填：例如 whisper-large-v3-turbo / whisper-1 / large-v3"
+        }
+      >
         <TextInput value={provider.model} onChange={(v) => patchProvider({ model: v })} testId="asr-provider-model" mono />
       </Field>
       <Field label="请求格式" hint="服务不支持 verbose_json 时会自动降级为 json">

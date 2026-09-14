@@ -28,6 +28,12 @@ function isWhisperCpp(p: AsrProvider | null): boolean {
   return /whisper\.cpp|whispercpp/i.test(`${p.id} ${p.name} ${p.baseUrl}`);
 }
 
+/** 与服务端保持一致：whisper.cpp server 的 /inference 不校验模型名（见 settings.rs） */
+function modelRequired(p: AsrProvider | null): boolean {
+  if (!p) return false;
+  return !p.transcriptionPath.trim().replace(/\/$/, "").endsWith("/inference");
+}
+
 export function StepAsr({ draft, set }: StepProps) {
   const toast = useStore((s) => s.toast);
   const asr = draft.asr;
@@ -94,7 +100,7 @@ export function StepAsr({ draft, set }: StepProps) {
     <div className="ob-body-inner">
       <StepHead
         title="语音识别服务"
-        desc="音频会按句上传到这里。云端服务需要 API Key；本地服务 Base URL 填 http://localhost:端口 即可，Key 留空。"
+        desc="音频会按句上传到这里。云端服务需要 API Key；本地服务 Key 留空。"
       />
 
       <Field label="服务商预设" hint="选一个会自动填好下面的字段，之后可以改">
@@ -107,7 +113,14 @@ export function StepAsr({ draft, set }: StepProps) {
         />
       </Field>
 
-      <Field label="Base URL" hint="服务根地址，云端通常以 /v1 结尾；本地服务填 http://localhost:端口">
+      <Field
+        label="Base URL"
+        hint={
+          local
+            ? "本地服务填 http://localhost:端口 —— 但注意：localhost 指的是这台电脑自己。服务跑在另一台机器上时，要填那台机器在这边能访问到的地址（例如 Tailscale IP），否则连不上"
+            : "服务根地址，云端通常以 /v1 结尾"
+        }
+      >
         <TextInput
           value={provider?.baseUrl ?? ""}
           onChange={(v) => patchProvider({ baseUrl: v })}
@@ -137,7 +150,14 @@ export function StepAsr({ draft, set }: StepProps) {
           placeholder="gsk_…"
         />
       </Field>
-      <Field label="模型名" hint="例如 whisper-large-v3-turbo / whisper-1 / large-v3">
+      <Field
+        label="模型名"
+        hint={
+          modelRequired(provider)
+            ? "必填：Groq 用 whisper-large-v3-turbo，OpenAI 用 whisper-1"
+            : "可留空：whisper.cpp server 不校验模型名，它只认启动时 -m 指定的模型"
+        }
+      >
         <TextInput
           value={provider?.model ?? ""}
           onChange={(v) => patchProvider({ model: v })}
