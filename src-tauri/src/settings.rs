@@ -428,6 +428,9 @@ pub struct GeneralSettings {
     pub font_scale: f32,
     pub data_dir: Option<String>,
     pub persist_api_key: bool,
+    /// 首次配置向导是否已完成。为 false 时前端启动后会引导用户配置
+    /// 识别服务与 AI 接口（这两件事不配好，应用其实什么都做不了）。
+    pub onboarding_completed: bool,
 }
 
 impl Default for GeneralSettings {
@@ -438,6 +441,7 @@ impl Default for GeneralSettings {
             font_scale: 1.0,
             data_dir: None,
             persist_api_key: true,
+            onboarding_completed: false,
         }
     }
 }

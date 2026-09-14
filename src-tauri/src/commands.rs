@@ -751,6 +751,22 @@ pub fn get_app_info(state: State<'_, AppState>) -> AppInfo {
     }
 }
 
+/// 用系统默认浏览器打开链接（首次向导里要跳到 BlackHole / 各家控制台等页面）
+#[tauri::command(rename_all = "camelCase")]
+pub fn open_url(app: AppHandle, url: String) -> AppResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let url = url.trim().to_string();
+    // 只放行 http/https：避免把任意字符串交给系统 opener 执行
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err(AppError::Other(
+            "只允许打开 http/https 链接".into(),
+        ));
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| AppError::Other(format!("打开链接失败：{e}")))
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub fn open_path(app: AppHandle, path: String) -> AppResult<()> {
     open_path_internal(&app, &PathBuf::from(path))

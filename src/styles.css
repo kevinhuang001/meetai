@@ -1905,3 +1905,551 @@ select.input {
     gap: 0.625rem;
   }
 }
+
+/* ------------------------------------------------------------------ 左侧历史栏 */
+
+.sidebar {
+  flex: none;
+  width: 17rem;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid var(--border);
+  background: var(--bg-2);
+  overflow: hidden;
+}
+.sidebar.collapsed {
+  width: 3.25rem;
+}
+
+.sb-top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+.sb-new {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+}
+.sidebar.collapsed .sb-new {
+  flex: none;
+  width: 2.25rem;
+  padding: 0;
+}
+
+.sb-search {
+  margin: 0.5rem;
+  flex: none;
+  max-width: none;
+  min-width: 0;
+}
+
+.sb-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 0.375rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.sb-row {
+  position: relative;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+.sb-row:hover {
+  background: var(--panel);
+  border-color: var(--border-soft);
+}
+.sb-row.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+/* 正在录音的会话：高亮 + 红点 */
+.sb-row.recording {
+  border-color: rgba(239, 91, 91, 0.45);
+  background: rgba(239, 91, 91, 0.08);
+}
+.sb-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1875rem;
+  width: 100%;
+  padding: 0.5rem;
+  border: none;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.sb-title {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb-meta {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.6875rem;
+  color: var(--mute);
+}
+.sb-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.6875rem;
+  color: var(--dim);
+}
+.rec-text {
+  color: var(--danger);
+}
+/* 重命名 / 删除入口：hover 或键盘聚焦时才显现，但始终可点击（自动化测试也要能点） */
+.sb-actions {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  display: flex;
+  gap: 0.125rem;
+  padding: 0.0625rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.sb-row:hover .sb-actions,
+.sb-row:focus-within .sb-actions {
+  opacity: 1;
+}
+.tiny-btn {
+  width: 1.5rem;
+  height: 1.5rem;
+  font-size: 0.75rem;
+}
+.sb-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.375rem 0.5rem;
+  border-top: 1px solid var(--border-soft);
+  background: var(--panel-2);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+}
+.sb-empty {
+  padding: 1.25rem 0.75rem;
+  text-align: center;
+}
+.sb-empty p {
+  margin: 0 0 0.25rem;
+  font-size: 0.8125rem;
+}
+.sb-hint {
+  padding: 0.75rem;
+}
+
+.sb-collapsed-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  overflow: hidden;
+}
+.sb-icon-row {
+  width: 2.25rem;
+  height: 2rem;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+  background: var(--panel-2);
+  color: var(--dim);
+  cursor: pointer;
+}
+.sb-icon-row:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
+.sb-mini-list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1875rem;
+  width: 100%;
+  overflow: hidden;
+}
+.sb-mini {
+  width: 2.25rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.125rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+  background: var(--panel);
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.sb-mini.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.sb-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  padding: 0.375rem;
+  border-top: 1px solid var(--border-soft);
+}
+.sb-foot-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+.sb-foot-btn:hover {
+  background: var(--panel-2);
+}
+.sidebar.collapsed .sb-foot-btn {
+  justify-content: center;
+}
+.sb-service {
+  padding: 0 0.5rem 0.25rem;
+  font-size: 0.6875rem;
+  color: var(--mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ 首次配置向导 */
+
+.ob-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: rgba(0, 0, 0, 0.62);
+}
+[data-theme="light"] .ob-backdrop {
+  background: rgba(15, 23, 42, 0.4);
+}
+.ob-panel {
+  width: min(52rem, 100%);
+  max-height: min(48rem, 94vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+}
+.ob-panel.boot {
+  padding: 2rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: var(--dim);
+}
+.ob-top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.ob-top h1 {
+  font-size: 1.0625rem;
+}
+.ob-top p {
+  margin: 0.125rem 0 0;
+}
+.ob-steps {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0.625rem 1rem;
+  list-style: none;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel);
+}
+.ob-step {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.125rem 0.5rem 0.125rem 0.25rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: var(--mute);
+}
+.ob-step.active {
+  color: var(--accent);
+  border-color: rgba(79, 140, 255, 0.45);
+  background: var(--accent-dim);
+}
+.ob-step.done {
+  color: var(--ok);
+}
+.ob-step-idx {
+  width: 1.125rem;
+  height: 1.125rem;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--panel-3);
+  font-size: 0.6875rem;
+}
+.ob-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem 1.25rem 1.5rem;
+}
+.ob-body-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+/* 向导里的表单沿用设置页的 .field 布局，只把标签列放宽一点，避免说明文字被挤成四五行 */
+.ob-body .field-label {
+  width: 11rem;
+}
+.ob-head h2 {
+  font-size: 1.0625rem;
+}
+.ob-head p {
+  margin: 0.25rem 0 0;
+}
+.ob-list {
+  margin: 0;
+  padding-left: 1.125rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8125rem;
+}
+.ob-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+.ob-tip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+.ob-tip strong {
+  font-size: 0.8125rem;
+}
+.ob-summary {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.ob-summary-row {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.375rem 0.5rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  font-size: 0.8125rem;
+}
+.ob-summary-row dt {
+  flex: none;
+  width: 7rem;
+  color: var(--dim);
+}
+.ob-summary-row dd {
+  margin: 0;
+  min-width: 0;
+  word-break: break-word;
+}
+.ob-foot {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.ob-foot-hint {
+  flex: 1 1 6rem;
+  min-width: 0;
+}
+.ob-foot-btns {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.375rem;
+  margin-left: auto;
+}
+
+/* ------------------------------------------------------------------ 内录引导卡片 */
+
+.guide-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid rgba(232, 163, 61, 0.4);
+  border-radius: var(--radius-sm);
+  background: rgba(232, 163, 61, 0.08);
+  font-size: 0.8125rem;
+}
+.guide-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.guide-head strong {
+  color: var(--warn);
+}
+.guide-steps {
+  margin: 0;
+  padding-left: 1.125rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1875rem;
+}
+.cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+.cmd-row .notice-code {
+  flex: 1;
+  min-width: 0;
+}
+.pick-list li {
+  padding: 0;
+  border: none;
+  background: transparent;
+  display: block;
+}
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.3125rem 0.375rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  text-align: left;
+  cursor: pointer;
+}
+.pick-row:hover {
+  background: var(--panel-2);
+}
+.pick-row.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.pick-row:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.pick-dot {
+  flex: none;
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 1.5px solid var(--border);
+  border-radius: 999px;
+}
+.pick-row.active .pick-dot {
+  border-color: var(--accent);
+  background: radial-gradient(circle, var(--accent) 0 46%, transparent 52%);
+}
+
+@media (max-width: 1100px) {
+  .ob-panel {
+    max-height: 96vh;
+  }
+  .sb-meta,
+  .sb-stats {
+    font-size: 0.625rem;
+  }
+}
+
+/* 设置页里可折叠的说明详情（默认收起，避免长命令常驻占屏） */
+.notice-details {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.notice-details > summary {
+  cursor: pointer;
+  color: var(--accent, #8b5cf6);
+  list-style: none;
+  user-select: none;
+}
+.notice-details > summary::-webkit-details-marker {
+  display: none;
+}
+.notice-details > summary::before {
+  content: "▸ ";
+}
+.notice-details[open] > summary::before {
+  content: "▾ ";
+}
+.notice-details > span {
+  display: block;
+  margin: 4px 0 2px;
+  color: var(--text-dim, #a1a1aa);
+}

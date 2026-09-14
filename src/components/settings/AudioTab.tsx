@@ -2,21 +2,9 @@
 import { api } from "../../lib/api";
 import type { AudioSettings } from "../../lib/contract";
 import { guard, useStore } from "../../store";
+import { LoopbackGuide } from "../LoopbackGuide";
 import { Button, Field, Select, Slider, SwitchRow } from "../ui";
 import type { TabProps } from "./SettingsDialog";
-
-function loopbackHint(platform: string | undefined): string {
-  switch (platform) {
-    case "macos":
-      return "macOS 不支持直接内录系统声音，需要先安装 BlackHole（免费）或 Loopback 等虚拟声卡，并把系统输出同时送到该设备。";
-    case "windows":
-      return "Windows 通过 WASAPI loopback 内录，通常无需额外驱动；若列表为空，请在「声音设置」里检查默认播放设备是否被禁用。";
-    case "linux":
-      return "Linux 需要 PulseAudio / PipeWire 的 monitor 源。若列表为空，确认已启动 pulseaudio 或 pipewire-pulse。";
-    default:
-      return "当前环境没有检测到系统内录设备（浏览器 mock 环境属于正常现象）。";
-  }
-}
 
 export function AudioTab({ draft, set }: TabProps) {
   const sources = useStore((s) => s.audioSources);
@@ -114,10 +102,7 @@ export function AudioTab({ draft, set }: TabProps) {
         </Field>
 
         {loops.length === 0 ? (
-          <div className="warn-bar" data-testid="loopback-hint">
-            <strong>没有检测到系统内录设备</strong>
-            <span>{loopbackHint(appInfo?.platform)}</span>
-          </div>
+          <LoopbackGuide platform={appInfo?.platform} onRefresh={() => void refresh()} />
         ) : null}
 
         <SwitchRow

@@ -16,21 +16,13 @@ function EmptyTranscript() {
         <IconMic size={44} />
       </div>
       <h3>还没有转写内容</h3>
-      <p>
-        点击底部的「开始录音」即可实时把会议语音转成文字，
-        <br />
-        也可以导入一个已有的音频文件，交给同一个识别服务转写。
-      </p>
+      <p>点「开始录音」，或导入一个音频文件。</p>
+      {/* 隐私与使用说明只在首次配置向导里讲一次，主界面不再重复三行提示 */}
       <div className="empty-actions">
         <span className="kbd-hint">
-          <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> 快速开始录音
+          <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> 开始录音
         </span>
       </div>
-      <ul className="empty-tips">
-        <li>音频会发送到你配置的识别服务（指向本地服务时不出本机）</li>
-        <li>右侧 AI 纪要会随会议推进自动更新</li>
-        <li>第一次使用请先在「设置 → 语音识别」里配置服务商</li>
-      </ul>
     </div>
   );
 }

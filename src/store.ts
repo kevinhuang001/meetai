@@ -46,7 +46,7 @@ export function errText(e: unknown): string {
 
 /* ------------------------------------------------------------------ 主 store */
 
-export type ViewKind = "recording" | "history" | "detail";
+export type ViewKind = "recording" | "detail";
 export type SettingsTab = "ai" | "asr" | "audio" | "vad" | "general";
 export type ToastKind = "error" | "info" | "success";
 
@@ -82,6 +82,13 @@ export interface AppState {
   settingsTab: SettingsTab;
   toasts: Toast[];
 
+  /** 首次运行配置向导是否打开（settings.general.onboardingCompleted === false 时为 true） */
+  onboardingOpen: boolean;
+  /** 左侧历史栏：用户偏好（记忆在 localStorage） */
+  sidebarCollapsed: boolean;
+  /** 左侧历史栏：窗口过窄（< 1100px）时的自动折叠 */
+  sidebarNarrow: boolean;
+
   /** 停止录音后由 ai.finalReportOnStop 自动生成的完整纪要 */
   finalReport: string | null;
   /** 最近一次结束的会话 id（用于「查看详情」） */
@@ -106,6 +113,11 @@ export interface AppState {
   openSettings: (tab?: SettingsTab) => void;
   closeSettings: () => void;
   setSettingsTab: (tab: SettingsTab) => void;
+  openOnboarding: () => void;
+  closeOnboarding: () => void;
+  setSidebarCollapsed: (v: boolean) => void;
+  toggleSidebar: () => void;
+  setSidebarNarrow: (v: boolean) => void;
   toast: (kind: ToastKind, scope: string, message: string) => void;
   dismissToast: (id: number) => void;
   resetSessionState: () => void;
@@ -116,6 +128,28 @@ export interface AppState {
 }
 
 let toastSeq = 0;
+
+/* ------------------------------------------------------- 左侧历史栏折叠状态 */
+
+const SIDEBAR_KEY = "meeting-hear:sidebar-collapsed";
+/** 窗口窄于该宽度时自动折叠成窄条 */
+export const SIDEBAR_NARROW_PX = 1100;
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeSidebarCollapsed(v: boolean) {
+  try {
+    localStorage.setItem(SIDEBAR_KEY, v ? "1" : "0");
+  } catch {
+    /* 忽略写入失败 */
+  }
+}
 
 export const useStore = create<AppState>((set, get) => ({
   ready: false,
@@ -140,6 +174,9 @@ export const useStore = create<AppState>((set, get) => ({
   settingsOpen: false,
   settingsTab: "ai",
   toasts: [],
+  onboardingOpen: false,
+  sidebarCollapsed: readSidebarCollapsed(),
+  sidebarNarrow: false,
   finalReport: null,
   lastSessionId: null,
   lastDetail: null,
@@ -162,6 +199,19 @@ export const useStore = create<AppState>((set, get) => ({
   openSettings: (tab) => set({ settingsOpen: true, settingsTab: tab ?? get().settingsTab }),
   closeSettings: () => set({ settingsOpen: false }),
   setSettingsTab: (settingsTab) => set({ settingsTab }),
+
+  openOnboarding: () => set({ onboardingOpen: true, settingsOpen: false }),
+  closeOnboarding: () => set({ onboardingOpen: false }),
+  setSidebarCollapsed: (v) => {
+    writeSidebarCollapsed(v);
+    set({ sidebarCollapsed: v });
+  },
+  toggleSidebar: () => {
+    const next = !get().sidebarCollapsed;
+    writeSidebarCollapsed(next);
+    set({ sidebarCollapsed: next });
+  },
+  setSidebarNarrow: (v) => set({ sidebarNarrow: v }),
 
   toast: (kind, scope, message) => {
     const id = ++toastSeq;

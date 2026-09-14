@@ -38,6 +38,57 @@ import {
   type TranscriptSegment,
 } from "./contract";
 
+declare global {
+  interface Window {
+    /** 冒烟测试用：mock 下 open_url 的调用记录（真实后端会调系统浏览器） */
+    __MEETING_HEAR_OPENED_URLS__?: string[];
+  }
+}
+
+/* ------------------------------- 测试开关 ------------------------------- */
+
+/**
+ * 浏览器 mock 的少量「环境模拟」开关，通过 URL 查询参数控制，仅测试使用：
+ *   ?mockPlatform=macos|windows|linux  —— 伪造 appInfo.platform（用于验证各平台的内录引导）
+ *   ?mockLoopback=none                 —— 模拟「没有检测到系统内录设备」
+ *   ?mockOnboarding=1                  —— 让 get_settings 直接返回「已完成向导」
+ */
+function queryParam(name: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return new URL(window.location.href).searchParams.get(name);
+  } catch {
+    return null;
+  }
+}
+
+const PLATFORM_OVERRIDE = queryParam("mockPlatform");
+const NO_LOOPBACK = queryParam("mockLoopback") === "none";
+const FORCE_ONBOARDED = queryParam("mockOnboarding") === "1";
+
+/* ------ 向导完成标记的持久化（浏览器 mock 没有配置文件，用 localStorage 代替） ------ */
+
+const LS_ONBOARDING = "meeting-hear:mock:onboardingCompleted";
+
+function readOnboardingFlag(): boolean {
+  if (FORCE_ONBOARDED) return true;
+  if (typeof localStorage === "undefined") return false;
+  try {
+    return localStorage.getItem(LS_ONBOARDING) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeOnboardingFlag(v: boolean) {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(LS_ONBOARDING, v ? "1" : "0");
+  } catch {
+    /* 隐私模式下写入失败可以忽略 */
+  }
+}
+
 /* ------------------------------- 事件总线 ------------------------------- */
 
 type Handler = (payload: unknown) => void;
@@ -170,7 +221,7 @@ function asrServiceLabel(s: Settings): string {
   return p.model.trim() ? `${p.name} · ${p.model}` : p.name;
 }
 
-const SOURCES: AudioSourceInfo[] = [
+const ALL_SOURCES: AudioSourceInfo[] = [
   {
     id: "mic:default",
     kind: "microphone",
@@ -199,6 +250,16 @@ const SOURCES: AudioSourceInfo[] = [
     note: null,
   },
 ];
+
+/** ?mockLoopback=none 时模拟「没有任何可用的系统内录源」，用于验证各平台的安装引导 */
+function listSources(): AudioSourceInfo[] {
+  if (!NO_LOOPBACK) return ALL_SOURCES;
+  return ALL_SOURCES.filter((s) => s.kind !== "loopback");
+}
+
+function sourceById(id: string): AudioSourceInfo | undefined {
+  return ALL_SOURCES.find((s) => s.id === id);
+}
 
 const PRESETS: AiPreset[] = [
   {
@@ -321,6 +382,8 @@ function defaultSettings(): Settings {
       fontScale: 1,
       dataDir: null,
       persistApiKey: true,
+      // 首次运行：默认未完成向导；测试可用 ?mockOnboarding=1 或 localStorage 开关跳过
+      onboardingCompleted: readOnboardingFlag(),
     },
   };
 }
@@ -328,7 +391,7 @@ function defaultSettings(): Settings {
 const APP_INFO: AppInfo = {
   name: "MeetingHear",
   version: "0.1.0 (mock)",
-  platform: "browser",
+  platform: PLATFORM_OVERRIDE ?? "browser",
   arch: "wasm",
   dataDir: "/mock/data",
   sessionsDir: "/mock/data/sessions",
@@ -377,6 +440,8 @@ interface MockSession {
 let settings = defaultSettings();
 let active: MockSession | null = null;
 let sessionHistory: SessionListItem[] = [];
+/** mock 下 open_url 的调用记录（供冒烟测试断言，真实后端不会有这个数组） */
+const openedUrls: string[] = [];
 
 function makeSummary(rev: number, scriptIndex: number, live: string): SummaryState {
   const reached = (n: number) => scriptIndex >= n;
@@ -453,8 +518,12 @@ function startMockSession(req: StartSessionRequest): SessionInfo {
       language: req.language || settings.asr.language,
       enableMic: req.enableMic,
       enableLoopback: req.enableLoopback,
-      micLabel: req.enableMic ? SOURCES[0].label : null,
-      loopbackLabel: req.enableLoopback ? SOURCES[2].label : null,
+      micLabel: req.micDeviceId
+        ? (sourceById(req.micDeviceId)?.label ?? req.micDeviceId)
+        : (listSources().find((s) => s.kind === "microphone")?.label ?? null),
+      loopbackLabel: req.loopbackDeviceId
+        ? (sourceById(req.loopbackDeviceId)?.label ?? req.loopbackDeviceId)
+        : (listSources().find((s) => s.kind === "loopback")?.label ?? null),
     },
     language: null,
     error: null,
@@ -673,6 +742,9 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       return ok(settings as unknown as T);
     case "save_settings": {
       settings = a["settings"] as unknown as Settings;
+      // 浏览器 mock 没有配置文件：把「向导已完成」这个标记持久化到 localStorage，
+      // 这样刷新页面后不会再弹向导（真实后端写在设置文件里）。
+      writeOnboardingFlag(settings.general.onboardingCompleted);
       return ok(settings as unknown as T);
     }
     case "reset_settings":
@@ -775,7 +847,7 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
 
     /* ---- 设备 ---- */
     case "list_audio_sources":
-      return ok(SOURCES as unknown as T);
+      return ok(listSources() as unknown as T);
 
     /* ---- 会话 ---- */
     case "start_session":
@@ -824,8 +896,8 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
           language: "zh",
           enableMic: true,
           enableLoopback: true,
-          micLabel: SOURCES[0].label,
-          loopbackLabel: SOURCES[2].label,
+          micLabel: listSources().find((s) => s.kind === "microphone")?.label ?? null,
+          loopbackLabel: listSources().find((s) => s.kind === "loopback")?.label ?? null,
         },
         language: "zh",
         error: null,
@@ -875,6 +947,16 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       return ok(APP_INFO as unknown as T);
     case "open_path":
       return ok(undefined as unknown as T);
+    case "open_url": {
+      const url = String(a["url"] ?? "").trim();
+      // 与 Rust 侧 open_url 保持一致：只放行 http/https
+      if (!url.startsWith("https://") && !url.startsWith("http://")) {
+        throw new Error("只允许打开 http/https 链接");
+      }
+      openedUrls.push(url);
+      window.__MEETING_HEAR_OPENED_URLS__ = [...openedUrls];
+      return ok(undefined as unknown as T);
+    }
 
     default:
       report("mock", `mock 后端未实现命令：${cmd}`);

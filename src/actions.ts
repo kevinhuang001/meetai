@@ -4,7 +4,7 @@
  */
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { api, isTauri } from "./lib/api";
-import { emptySummary, type ExportFormat, type StartSessionRequest } from "./lib/contract";
+import { emptySummary, type ExportFormat, type Settings, type StartSessionRequest } from "./lib/contract";
 import { asrReadiness } from "./lib/settings";
 import { guard, useLevelStore, usePartialStore, useStore } from "./store";
 
@@ -47,6 +47,9 @@ function currentRequest(): StartSessionRequest | null {
 export async function startRecording(): Promise<void> {
   const st = useStore.getState();
   if (st.session) return;
+  // 首次配置向导期间不允许开始录音：识别服务与 AI 接口都还没确认，
+  // 这时候开录只会每个请求都失败。
+  if (st.onboardingOpen) return;
   const req = currentRequest();
   if (!req) return;
 
@@ -140,6 +143,28 @@ export async function importAudioFile(): Promise<void> {
   useLevelStore.getState().reset();
   usePartialStore.getState().apply(null);
   st.toast("success", "导入音频", `开始转写：${path}`);
+}
+
+/**
+ * 「设置 → 通用 → 重新运行配置向导」：
+ * 把 onboardingCompleted 设回 false 并立刻保存，然后重新打开向导。
+ */
+export async function restartOnboarding(): Promise<void> {
+  const st = useStore.getState();
+  const current = st.settings;
+  if (!current) {
+    st.toast("error", "配置向导", "设置尚未加载完成，请稍后再试");
+    return;
+  }
+  const next: Settings = {
+    ...current,
+    general: { ...current.general, onboardingCompleted: false },
+  };
+  const saved = await guard("重新运行配置向导", () => api.saveSettings(next));
+  st.setSettings(saved ?? next);
+  st.closeSettings();
+  st.openOnboarding();
+  st.toast("info", "配置向导", "已重新打开首次配置向导");
 }
 
 export async function summarizeNow(sessionId: string | null): Promise<void> {

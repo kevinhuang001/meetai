@@ -1,6 +1,6 @@
 /** 右侧「AI 实时纪要」面板：录制视图与会话详情视图共用 */
 import { useMemo, useState } from "react";
-import { formatClock, type SummaryState } from "../lib/contract";
+import type { SummaryState } from "../lib/contract";
 import { formatTimeOfDay } from "../lib/util";
 import { Badge, Button } from "./ui";
 import { IconChevron, IconSparkle } from "./icons";
@@ -28,10 +28,38 @@ function ThinkingSkeleton() {
   );
 }
 
+/**
+ * 纪要要点：优先渲染模型给的 markdown 列表，没有时退回关键要点数组。
+ *
+ * 之前「关键要点 / 纪要要点 / 已达成的决定」是三块独立分区，内容大量重叠
+ * （模型本来就会把结论与决定写进要点列表），所以合并成一块。
+ */
+function MarkdownList({ text, fallback }: { text: string; fallback: string[] }) {
+  const items = useMemo(() => {
+    const lines = text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => l.replace(/^[-*•]\s*/, "").trim())
+      .filter(Boolean);
+    return lines.length ? lines : fallback;
+  }, [text, fallback]);
+
+  if (!items.length) return null;
+  return (
+    <ul className="kv-list" data-testid="summary-keypoints">
+      {items.map((k, i) => (
+        <li key={`${i}-${k}`}>{k}</li>
+      ))}
+    </ul>
+  );
+}
+
 export function SummaryPanel({
   summary,
   aiStatus,
-  aiMessage,
+  // 保留在 props 里以兼容调用方；错误信息统一走 summary.error，避免两处重复展示
+  aiMessage: _aiMessage,
   latestEndMs,
   ready,
   notReadyReason,
@@ -87,7 +115,7 @@ export function SummaryPanel({
           <div className="empty-card" data-testid="summary-not-configured">
             <div className="empty-icon"><IconSparkle size={30} /></div>
             <h4>未配置 AI 接口</h4>
-            <p>{notReadyReason || "配置一个 OpenAI 兼容的服务商后，这里会实时生成会议纪要。"}</p>
+            <p>{notReadyReason || "配置后这里会实时生成会议纪要。"}</p>
             <Button variant="primary" onClick={onOpenAiSettings} testId="summary-open-ai-settings">
               去配置 AI 接口
             </Button>
@@ -115,44 +143,37 @@ export function SummaryPanel({
                 ) : null}
               </div>
               {thinking ? (
-                <>
-                  <div className="live-thinking">AI 正在总结…</div>
-                  <ThinkingSkeleton />
-                </>
+                <ThinkingSkeleton />
               ) : (
                 <p className="live-text" data-testid="summary-live">
-                  {summary.live || "还没有可以总结的内容，开始说话后这里会实时更新。"}
+                  {summary.live || "开始说话后这里会实时更新。"}
                 </p>
               )}
             </section>
 
-            <section className="block">
-              <h4>会议总览</h4>
-              <p className="overview" data-testid="summary-overview">
-                {summary.overview || "暂无"}
-              </p>
-            </section>
+            {/* 面板只留「边开会边要看」的三块；关键结论/已达成决定/主题等
+                仍然照常生成，并且都会出现在导出的会议纪要里，不在这里重复展示。 */}
+            {summary.overview.trim() ? (
+              <section className="block">
+                <h4>会议总览</h4>
+                <p className="overview" data-testid="summary-overview">
+                  {summary.overview}
+                </p>
+              </section>
+            ) : null}
 
-            <section className="block">
-              <h4>
-                关键要点 <Badge>{summary.keyPoints.length}</Badge>
-              </h4>
-              {summary.keyPoints.length ? (
-                <ul className="kv-list" data-testid="summary-keypoints">
-                  {summary.keyPoints.map((k, i) => (
-                    <li key={`${i}-${k}`}>{k}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="dim small">暂无</p>
-              )}
-            </section>
+            {summary.summary.trim() || summary.keyPoints.length ? (
+              <section className="block">
+                <h4>纪要要点</h4>
+                <MarkdownList text={summary.summary} fallback={summary.keyPoints} />
+              </section>
+            ) : null}
 
-            <section className="block">
-              <h4>
-                待办事项 <Badge tone="accent">{summary.actionItems.length}</Badge>
-              </h4>
-              {summary.actionItems.length ? (
+            {summary.actionItems.length ? (
+              <section className="block">
+                <h4>
+                  待办事项 <Badge tone="accent">{summary.actionItems.length}</Badge>
+                </h4>
                 <ul className="todo-list" data-testid="summary-actions">
                   {summary.actionItems.map((a, i) => {
                     const key = `${i}-${a.text}`;
@@ -177,64 +198,26 @@ export function SummaryPanel({
                     );
                   })}
                 </ul>
-              ) : (
-                <p className="dim small">暂无</p>
-              )}
-            </section>
-
-            <section className="block">
-              <h4>已达成的决定</h4>
-              {summary.decisions.length ? (
-                <ul className="kv-list decision" data-testid="summary-decisions">
-                  {summary.decisions.map((d, i) => (
-                    <li key={`${i}-${d}`}>{d}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="dim small">暂无</p>
-              )}
-            </section>
-
-            <section className="block">
-              <h4>当前主题</h4>
-              {summary.topics.length ? (
-                <div className="tags" data-testid="summary-topics">
-                  {summary.topics.map((t, i) => (
-                    <span className="tag" key={`${i}-${t}`}>
-                      {t}
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <p className="dim small">暂无</p>
-              )}
-            </section>
+              </section>
+            ) : null}
           </div>
 
           <footer className="panel-foot">
-            <div className="foot-line">
-              <span className="dim small" data-testid="summary-updated">
-                更新时间 {summary.updatedAt ? formatTimeOfDay(summary.updatedAt) : "—"}
-              </span>
-              <span className="dim small">
-                覆盖至 {summary.coveredUntilMs ? formatClock(summary.coveredUntilMs) : "—"}
-              </span>
-            </div>
-            <div className="foot-line">
-              <span className={lagSecs > 20 ? "lag warn small" : "lag small"} data-testid="summary-lag">
-                {lagSecs > 0 ? `纪要进度落后转写 ${lagSecs} 秒` : "纪要已跟上转写"}
-              </span>
-              {summary.calls > 0 ? (
-                <span className="dim tiny">第 {summary.calls} 次总结</span>
-              ) : null}
-            </div>
-            {aiMessage ? <div className="dim tiny">{aiMessage}</div> : null}
+            {/* 只在真的落后时才提示；平时不占一行 */}
+            {lagSecs > 20 ? (
+              <div className="lag warn small" data-testid="summary-lag">
+                纪要落后转写 {lagSecs} 秒
+              </div>
+            ) : null}
             <Button
               variant="primary"
               onClick={onSummarizeNow}
               disabled={busy || thinking}
               testId="summarize-now"
               className="block-btn"
+              title={`共总结 ${summary.calls} 次${
+                summary.updatedAt ? ` · 更新于 ${formatTimeOfDay(summary.updatedAt)}` : ""
+              }`}
             >
               {busy || thinking ? "总结中…" : "立即总结"}
             </Button>

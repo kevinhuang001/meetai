@@ -74,3 +74,22 @@ export function IconChevron({ dir, size = 16 }: { dir: "left" | "right"; size?: 
     </Svg>
   );
 }
+
+/** 左侧历史栏的折叠 / 展开 */
+export function IconPanel({ size = 16 }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9.5 4v16" />
+      <path d="M5.5 8h1.5M5.5 11.5h1.5" />
+    </Svg>
+  );
+}
+
+export function IconPlus({ size = 15 }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <path d="M12 5v14M5 12h14" />
+    </Svg>
+  );
+}

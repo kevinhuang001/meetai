@@ -1,7 +1,7 @@
 /** 顶栏：应用名、可编辑会议标题、状态胶囊、计时器、设置/历史入口 */
 import { useEffect, useRef, useState } from "react";
 import { formatClock } from "../lib/contract";
-import { IconFolder } from "./icons";
+import { IconPanel } from "./icons";
 import { api } from "../lib/api";
 import { guard, useLevelStore, useStore } from "../store";
 
@@ -40,9 +40,7 @@ export function TopBar() {
   const pendingTitle = useStore((s) => s.pendingTitle);
   const setPendingTitle = useStore((s) => s.setPendingTitle);
   const patchSession = useStore((s) => s.patchSession);
-  const openSettings = useStore((s) => s.openSettings);
-  const setView = useStore((s) => s.setView);
-  const view = useStore((s) => s.view);
+  const collapsed = useStore((s) => s.sidebarCollapsed || s.sidebarNarrow);
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -70,12 +68,10 @@ export function TopBar() {
 
   return (
     <header className="topbar">
-      <div className="brand">
-        <span className="logo" aria-hidden="true">
-          ◉
-        </span>
-        <span className="brand-name">MeetingHear</span>
-      </div>
+      {/* 品牌名不再常驻：窗口标题栏已经写明，界面里重复一遍只是噪音 */}
+      <span className="logo" aria-hidden="true" title="MeetingHear">
+        ◉
+      </span>
 
       <div className="title-zone">
         {editing ? (
@@ -117,26 +113,16 @@ export function TopBar() {
       </div>
 
       <div className="topbar-right">
-        <span className="dim tiny kbd-hint" title="快捷键">
-          <kbd>Ctrl</kbd>+<kbd>Enter</kbd> 录音 · <kbd>Ctrl</kbd>+<kbd>K</kbd> 历史
-        </span>
+        {/* 快捷键提示不再常驻（设置 → 通用里有），设置按钮也移除了
+            —— 左侧 sidebar 底部已经有一个。 */}
         <button
-          className={view === "history" ? "icon-btn active" : "icon-btn"}
-          aria-label="历史会话"
-          title="历史会话（Ctrl/Cmd+K）"
-          data-testid="open-history"
-          onClick={() => setView(view === "history" ? "recording" : "history")}
+          className={collapsed ? "icon-btn" : "icon-btn active"}
+          aria-label={collapsed ? "展开历史栏" : "折叠历史栏"}
+          title="折叠 / 展开左侧历史栏"
+          data-testid="toggle-sidebar"
+          onClick={() => useStore.getState().toggleSidebar()}
         >
-          <IconFolder />
-        </button>
-        <button
-          className="icon-btn"
-          aria-label="设置"
-          title="设置"
-          data-testid="open-settings"
-          onClick={() => openSettings()}
-        >
-          ⚙
+          <IconPanel />
         </button>
       </div>
     </header>

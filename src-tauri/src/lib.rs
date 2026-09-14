@@ -127,6 +127,7 @@ pub fn run() {
             // 应用
             commands::get_app_info,
             commands::open_path,
+            commands::open_url,
         ])
         .run(tauri::generate_context!())
         .expect("MeetingHear 启动失败");

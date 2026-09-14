@@ -128,6 +128,76 @@ async function shot(page, name) {
 
 const IGNORED_CONSOLE = [/favicon\.ico/i, /Download the React DevTools/i];
 
+/**
+ * 内录引导卡片：用一个独立 context 打开「指定平台 + 没有内录源」的 mock 环境，
+ * 验证「设置 → 音频设备」里出现对应平台的安装引导、命令与「重新检测设备」。
+ * （虚拟声卡是系统级驱动，应用无法内置安装，所以这里只能验证引导本身。）
+ */
+async function checkLoopbackGuide(browser, platform, expectCmd, shotName) {
+  const ctx = await browser.newContext({
+    viewport: { width: 1360, height: 860 },
+    permissions: ["clipboard-read", "clipboard-write"],
+  });
+  const p = await ctx.newPage();
+  const errs = [];
+  p.on("console", (m) => {
+    if (m.type() === "error") errs.push(m.text());
+  });
+  p.on("pageerror", (e) => errs.push(`pageerror: ${e.message}`));
+  try {
+    await p.goto(`${BASE}/?mockPlatform=${platform}&mockLoopback=none&mockOnboarding=1`, {
+      waitUntil: "domcontentloaded",
+    });
+    await waitFor(() => p.locator('[data-testid="sidebar"]').isVisible().catch(() => false), {
+      timeout: 20000,
+      label: `等待 ${platform} 页面启动`,
+    });
+    await p.locator('[data-testid="sidebar-settings"]').click();
+    await waitFor(() => p.locator('[data-testid="settings-dialog"]').isVisible(), { timeout: 8000 });
+    await p.locator('[data-testid="tab-audio"]').click();
+    const shown = await waitFor(
+      () => p.locator('[data-testid="loopback-guide"]').isVisible().catch(() => false),
+      { timeout: 8000, interval: 200, label: `等待 ${platform} 内录引导卡片` },
+    ).catch(() => false);
+    const attr = await p.locator('[data-testid="loopback-guide"]').getAttribute("data-platform").catch(() => "");
+    const guideText = (await p.locator('[data-testid="loopback-guide"]').innerText().catch(() => "")).replace(/\s+/g, " ");
+    await shot(p, shotName);
+    check(
+      `o-${platform}. 没有内录源时显示 ${platform} 平台的内录引导卡片`,
+      shown && attr === platform && guideText.includes(expectCmd.split(" ").slice(0, 2).join(" ")),
+      `卡片=${shown}，平台=${attr}`,
+    );
+
+    if (platform === "macos") {
+      await p.locator('[data-testid="loopback-guide-open-page"]').click();
+      const openedUrls = await p.evaluate(() => window.__MEETING_HEAR_OPENED_URLS__ ?? []);
+      check(
+        "o-macos-2. 引导卡片可一键打开 BlackHole 下载页（api.openUrl）",
+        openedUrls.some((u) => u.includes("existential.audio/blackhole")),
+        openedUrls.join(" | ") || "（未记录到调用）",
+      );
+      check(
+        "o-macos-3. 卡片包含「音频 MIDI 设置 → 多输出设备」三步说明",
+        /音频 MIDI 设置/.test(guideText) && /多输出设备/.test(guideText) && /系统输出/.test(guideText),
+        guideText.slice(0, 56) + "…",
+      );
+    }
+
+    await p.locator('[data-testid="loopback-guide-refresh"]').click();
+    const refreshed = await waitFor(
+      async () => {
+        const t = await p.locator('[data-testid="toasts"]').innerText().catch(() => "");
+        return /音频设备/.test(t) ? t.replace(/\s+/g, " ") : "";
+      },
+      { timeout: 8000, interval: 250, label: "等待重新检测结果" },
+    ).catch(() => "");
+    check(`o-${platform}-4. 「重新检测设备」重新调用 list_audio_sources`, Boolean(refreshed), String(refreshed).slice(0, 46));
+    check(`o-${platform}-5. 引导页无 console error`, errs.length === 0, errs.slice(0, 2).join(" | ") || "无");
+  } finally {
+    await ctx.close().catch(() => {});
+  }
+}
+
 async function main() {
   await mkdir(ARTIFACTS, { recursive: true });
 
@@ -156,6 +226,199 @@ async function main() {
   try {
     /* ---------------------------------------------------------- 打开应用 */
     await page.goto(BASE, { waitUntil: "domcontentloaded" });
+
+    /* ============================================================
+     * 首次运行配置向导（settings.general.onboardingCompleted = false）
+     * ========================================================== */
+    await waitFor(() => page.locator('[data-testid="onboarding-wizard"]').isVisible().catch(() => false), {
+      timeout: 20000,
+      interval: 200,
+      label: "等待首次运行配置向导",
+    });
+    const obTitle = await page.locator('[data-testid="onboarding-title"]').innerText();
+    check("k1. 首次进入（onboardingCompleted=false）弹出全屏配置向导", /向导/.test(obTitle), obTitle);
+
+    const privacy = (await page.locator('[data-testid="onboarding-privacy"]').innerText()).replace(/\s+/g, " ");
+    check(
+      "k2. 第 1 步明确提示「音频会发送到你配置的识别服务」（隐私）",
+      /音频/.test(privacy) && /识别服务/.test(privacy) && /不会出本机/.test(privacy) && /whisper\.cpp/i.test(privacy),
+      privacy.slice(0, 56) + "…",
+    );
+    const obSteps = await page.locator('[data-testid="onboarding-step-indicator"] li').count();
+    check("k2b. 向导有步骤指示器（5 步）", obSteps === 5, `${obSteps} 步`);
+    await shot(page, "17-onboarding-1-welcome.png");
+
+    /* ---- 第 2 步：语音识别服务 ---- */
+    await page.locator('[data-testid="onboarding-next"]').click();
+    await waitFor(() => page.locator('[data-testid="onboarding-asr-baseurl"]').isVisible().catch(() => false), {
+      timeout: 8000,
+      interval: 200,
+      label: "等待识别服务步骤",
+    });
+    const obBaseUrl = await page.locator('[data-testid="onboarding-asr-baseurl"]').inputValue();
+    const obTestBtn = await page.locator('[data-testid="onboarding-asr-test"]').isVisible();
+    check(
+      "k3. 第 2 步有 Base URL 输入框与「测试连接」按钮",
+      /^https?:\/\//.test(obBaseUrl) && obTestBtn,
+      `baseUrl=${obBaseUrl}，测试按钮=${obTestBtn}`,
+    );
+
+    await page.locator('[data-testid="onboarding-asr-preset"]').selectOption("local-whispercpp");
+    await waitFor(() => page.locator('[data-testid="onboarding-asr-local-hint"]').isVisible().catch(() => false), {
+      timeout: 5000,
+      label: "等待本地 whisper.cpp 提示",
+    });
+    const localHint = (await page.locator('[data-testid="onboarding-asr-local-hint"]').innerText()).replace(/\s+/g, " ");
+    check(
+      "k4. 本地 whisper.cpp 预设给出启动命令示例与「端口要和 Base URL 一致」提示",
+      /whisper-server/.test(localHint) && /8080/.test(localHint) && /端口/.test(localHint) && /ggml-base\.bin/.test(localHint),
+      localHint.slice(0, 72) + "…",
+    );
+    await shot(page, "18-onboarding-2-asr-local.png");
+
+    await page.locator('[data-testid="onboarding-asr-test"]').click();
+    const obAsrOk = await waitFor(
+      async () => {
+        const el = page.locator('[data-testid="onboarding-asr-test-result"]');
+        if ((await el.count()) === 0) return "";
+        const t = (await el.innerText()).replace(/\s+/g, " ");
+        return /连接成功/.test(t) ? t : "";
+      },
+      { timeout: 8000, interval: 200, label: "等待向导内识别测试成功反馈" },
+    ).catch(() => "");
+    check(
+      "k5. 向导内「测试连接」成功时显示延迟与「空文本属正常」说明",
+      /连接成功/.test(obAsrOk) && /延迟/.test(obAsrOk) && /静音/.test(obAsrOk),
+      obAsrOk.slice(0, 60) + "…",
+    );
+
+    // 失败路径：清空 Base URL 后应当显示后端返回的中文错误
+    await page.locator('[data-testid="onboarding-asr-baseurl"]').fill("");
+    await page.locator('[data-testid="onboarding-asr-test"]').click();
+    const obAsrBad = await waitFor(
+      async () => {
+        const el = page.locator('[data-testid="onboarding-asr-test-result"]');
+        if ((await el.count()) === 0) return "";
+        const t = (await el.innerText()).replace(/\s+/g, " ");
+        return /连接失败/.test(t) ? t : "";
+      },
+      { timeout: 8000, interval: 200, label: "等待向导内识别测试失败反馈" },
+    ).catch(() => "");
+    check(
+      "k6. 测试失败时显示后端返回的中文错误（Base URL 未配置）",
+      /连接失败/.test(obAsrBad) && /Base URL/.test(obAsrBad),
+      obAsrBad.slice(0, 60) + "…",
+    );
+
+    // 切回云端预设，并验证向导里可以直接打开服务商控制台
+    await page.locator('[data-testid="onboarding-asr-preset"]').selectOption("groq");
+    await waitFor(async () => (await page.locator('[data-testid="onboarding-asr-open-console"] button').count()) > 0, {
+      timeout: 5000,
+      label: "等待服务商控制台链接",
+    });
+    await page.locator('[data-testid="onboarding-asr-open-console"] button').first().click();
+    const opened = await page.evaluate(() => window.__MEETING_HEAR_OPENED_URLS__ ?? []);
+    check(
+      "k7. 向导内可用 api.openUrl 打开服务商控制台（Groq key 申请页）",
+      opened.some((u) => u.includes("console.groq.com")),
+      opened.join(" | ") || "（未记录到调用）",
+    );
+
+    /* ---- 第 3 步：AI 接口 ---- */
+    await page.locator('[data-testid="onboarding-next"]').click();
+    await waitFor(() => page.locator('[data-testid="onboarding-ai-baseurl"]').isVisible().catch(() => false), {
+      timeout: 8000,
+      interval: 200,
+      label: "等待 AI 接口步骤",
+    });
+    const obAiBase = await page.locator('[data-testid="onboarding-ai-baseurl"]').inputValue();
+    const obAiModel = await page.locator('[data-testid="onboarding-ai-model"]').inputValue();
+    check(
+      "k8. 第 3 步 AI 接口有 Base URL / 模型名 / 测试连接",
+      /^https?:\/\//.test(obAiBase) && obAiModel.trim().length > 0 && (await page.locator('[data-testid="onboarding-ai-test"]').isVisible()),
+      `${obAiBase} · ${obAiModel}`,
+    );
+    const ollamaHint = (await page.locator('[data-testid="onboarding-ai-ollama-hint"]').innerText()).replace(/\s+/g, " ");
+    check(
+      "k8b. 说明本地 Ollama 用法（http://localhost:11434/v1 + 已 pull 的模型名）",
+      /Ollama/.test(ollamaHint) && /11434/.test(ollamaHint) && /ollama pull/.test(ollamaHint),
+      ollamaHint.slice(0, 64) + "…",
+    );
+    await page.locator('[data-testid="onboarding-ai-test"]').click();
+    const obAiOk = await waitFor(
+      async () => {
+        const el = page.locator('[data-testid="onboarding-ai-test-result"]');
+        if ((await el.count()) === 0) return "";
+        const t = (await el.innerText()).replace(/\s+/g, " ");
+        return /连接成功/.test(t) ? t : "";
+      },
+      { timeout: 8000, interval: 200, label: "等待向导内 AI 测试结果" },
+    ).catch(() => "");
+    check("k9. 向导内 AI 接口「测试连接」给出成功反馈与延迟", /连接成功/.test(obAiOk) && /延迟/.test(obAiOk), obAiOk.slice(0, 56));
+    await shot(page, "19-onboarding-3-ai.png");
+
+    /* ---- 第 4 步：音频设备 ---- */
+    await page.locator('[data-testid="onboarding-next"]').click();
+    await waitFor(() => page.locator('[data-testid="onboarding-audio-list"]').isVisible().catch(() => false), {
+      timeout: 8000,
+      interval: 200,
+      label: "等待音频设备步骤",
+    });
+    const obDevices = await page.locator('[data-testid="onboarding-audio-list"] .pick-row').count();
+    const obLoopRows = await page.locator('[data-testid^="onboarding-loopback-"]').count();
+    check(
+      "k10. 第 4 步列出麦克风与系统内录来源（可勾选默认设备）",
+      obDevices >= 3 && obLoopRows >= 1,
+      `设备行 ${obDevices}，内录候选 ${obLoopRows}`,
+    );
+    await shot(page, "20-onboarding-4-audio.png");
+
+    /* ---- 第 5 步：完成 ---- */
+    await page.locator('[data-testid="onboarding-next"]').click();
+    await waitFor(() => page.locator('[data-testid="onboarding-done-summary"]').isVisible().catch(() => false), {
+      timeout: 8000,
+      interval: 200,
+      label: "等待完成步骤",
+    });
+    const doneSummary = (await page.locator('[data-testid="onboarding-done-summary"]').innerText()).replace(/\s+/g, " ");
+    check(
+      "k11. 第 5 步汇总配置并说明「随时可以在设置里改」",
+      /语音识别服务/.test(doneSummary) && /AI 接口/.test(doneSummary) && /音频来源/.test(doneSummary),
+      doneSummary.slice(0, 64) + "…",
+    );
+    await shot(page, "21-onboarding-5-done.png");
+
+    await page.locator('[data-testid="onboarding-finish"]').click();
+    await waitFor(async () => (await page.locator('[data-testid="onboarding-wizard"]').count()) === 0, {
+      timeout: 10000,
+      interval: 200,
+      label: "等待向导关闭",
+    });
+    await waitFor(() => page.locator('[data-testid="sidebar"]').isVisible().catch(() => false), {
+      timeout: 8000,
+      label: "等待主界面（左侧历史栏）",
+    });
+    check("k12. 完成向导后进入主界面，左侧出现历史 sidebar", await page.locator('[data-testid="sidebar"]').isVisible());
+    check("k12b. 向导期间没有开始录音（状态仍为空闲）", /空闲/.test(await page.locator('[data-testid="status-pill"]').innerText()));
+
+    // 刷新页面：向导不应再出现（onboardingCompleted 已持久化）
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await waitFor(() => page.locator('[data-testid="sidebar"]').isVisible().catch(() => false), {
+      timeout: 20000,
+      label: "等待刷新后启动完成",
+    });
+    await sleep(600);
+    check(
+      "k13. 刷新页面后向导不再出现（onboardingCompleted 已保存）",
+      (await page.locator('[data-testid="onboarding-wizard"]').count()) === 0,
+    );
+    const emptyGuide = (await page.locator('[data-testid="sidebar-empty"]').innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(
+      "k14. 空历史时 sidebar 给出友好引导（点「新建会议」开始）",
+      /还没有会议记录/.test(emptyGuide) && /新建会议/.test(emptyGuide),
+      emptyGuide.slice(0, 48),
+    );
+    await shot(page, "22-sidebar-empty.png");
 
     await waitFor(() => page.locator('[data-testid="transcript-list"]').count(), {
       timeout: 20000,
@@ -219,6 +482,22 @@ async function main() {
 
     await shot(page, "03-segments.png");
 
+    // 正在录音的会话置顶并高亮（红点）
+    const liveRow = page.locator('[data-testid="sidebar-list"] .sb-row.recording');
+    const liveCount = await liveRow.count();
+    const liveDot = await liveRow.first().locator(".rec-dot").count().catch(() => 0);
+    const liveFirst = await page
+      .locator('[data-testid="sidebar-list"] .sb-row')
+      .first()
+      .evaluate((el) => el.className.includes("recording"))
+      .catch(() => false);
+    check(
+      "c10. sidebar 里正在录音的会话置顶并高亮（带红点）",
+      liveCount === 1 && liveDot === 1 && liveFirst,
+      `录音中条目 ${liveCount}，红点 ${liveDot}，置顶 ${liveFirst}`,
+    );
+    await shot(page, "23-sidebar-recording.png");
+
     // 活动行（partial）应当出现过
     const partialSeen = await page.locator('[data-testid="partial-row"]').count();
     check("c2. 存在「正在说话」的活动行或已定稿行", partialSeen > 0 || counted > 0, `partial-row=${partialSeen}`);
@@ -240,8 +519,16 @@ async function main() {
     }
     check("c3. 「刚刚说到」AI 纪要文本非空", live.length > 0, live.slice(0, 48) + (live ? "…" : ""));
 
+    // 指标条做过精简：只留「识别 / 延迟 / 字数」，RTF 与句数收进延迟的悬停提示
     const metrics = await page.locator('[data-testid="metrics"]').innerText().catch(() => "");
-    check("c4. 指标条显示 RTF / 延迟 / 字数", /RTF/.test(metrics) && /延迟/.test(metrics) && /字数/.test(metrics), metrics.replace(/\s+/g, " ").slice(0, 70));
+    check(
+      "c4. 指标条只显示识别 / 延迟 / 字数（已去掉 RTF、句数、音频时长）",
+      /识别/.test(metrics) && /延迟/.test(metrics) && /字数/.test(metrics)
+        && !/RTF/.test(metrics) && !/句数/.test(metrics) && !/音频/.test(metrics),
+      metrics.replace(/\s+/g, " ").slice(0, 70),
+    );
+    const latencyTitle = await page.locator('[data-testid="metric-latency"]').getAttribute("title").catch(() => "");
+    check("c4a. RTF 与句数仍在延迟的悬停提示里（信息没丢，只是不占位）", /RTF/.test(latencyTitle ?? "") && /句/.test(latencyTitle ?? ""), latencyTitle ?? "");
     const serviceMetric = await page.locator('[data-testid="metric-asr-service"]').innerText().catch(() => "");
     check(
       "c4b. 指标条显示识别服务（服务商 · 模型）而非本地模型名",
@@ -249,11 +536,29 @@ async function main() {
       serviceMetric,
     );
 
-    const summaryPanel = await page.locator('[data-testid="summary-panel"]').innerText().catch(() => "");
+    // 分区是「有内容才渲染」的，所以这里等纪要累积出来（mock 的待办要等第 7 句）
+    const summaryPanel = await waitFor(
+      async () => {
+        const t = await page.locator('[data-testid="summary-panel"]').innerText().catch(() => "");
+        return /会议总览/.test(t) && /纪要要点/.test(t) && /待办事项/.test(t) ? t : false;
+      },
+      { timeout: 40000, interval: 500, label: "等待纪要三块齐全" },
+    ).catch(() => "");
     check(
-      "c5. 纪要面板渲染总览/要点/待办分区",
-      /会议总览/.test(summaryPanel) && /关键要点/.test(summaryPanel) && /待办事项/.test(summaryPanel),
+      "c5. 纪要面板渲染总览 / 纪要要点 / 待办三块（有内容才渲染）",
+      Boolean(summaryPanel),
+      String(summaryPanel).replace(/\s+/g, " ").slice(0, 80),
     );
+    // 精简的核心诉求：空的区块不再渲染，也不出现「暂无」占位文字
+    check(
+      "c5b. 已合并的分区不再重复展示（无关键要点/已达成的决定/当前主题三块，且没有「暂无」占位）",
+      !/关键要点/.test(summaryPanel) && !/已达成的决定/.test(summaryPanel)
+        && !/当前主题/.test(summaryPanel) && !/暂无/.test(summaryPanel),
+      summaryPanel.replace(/\s+/g, " ").slice(0, 80),
+    );
+    // 底部状态行只在落后时出现，平时不占一行
+    const lagVisible = await page.locator('[data-testid="summary-lag"]').count();
+    check("c5c. 纪要及时跟上了就不显示状态行（不再常驻「纪要已跟上转写」）", lagVisible === 0, `lag 元素 ${lagVisible} 个`);
     await shot(page, "04-summary.png");
 
     /* ---------------------------------------------------------- 过滤 / 复制 / 回到最新 */
@@ -333,7 +638,7 @@ async function main() {
     await sleep(300);
 
     /* ---------------------------------------------------------- 设置弹窗 */
-    await page.locator('[data-testid="open-settings"]').click();
+    await page.locator('[data-testid="sidebar-settings"]').click();
     await waitFor(() => page.locator('[data-testid="settings-dialog"]').isVisible(), {
       timeout: 8000,
       label: "等待设置弹窗",
@@ -353,12 +658,31 @@ async function main() {
     const providerCount = await providerItems.count();
     check("e3. 语音识别页列出识别服务商", providerCount >= 1, `${providerCount} 个服务商`);
 
+    // 提示块默认只留一行结论，离线自建的命令收进可折叠详情里
     const noticeText = (await page.locator('[data-testid="asr-service-notice"]').innerText()).replace(/\s+/g, " ");
     check(
-      "e3b. 提示块说明「本应用不含识别模型，需要外部识别服务」",
-      /不含识别模型/.test(noticeText) && /外部识别服务/.test(noticeText) && /whisper/.test(noticeText),
+      "e3b. 提示块一行说明「本应用不含识别模型，需要外部识别服务」",
+      /不含识别模型/.test(noticeText) && /外部识别服务/.test(noticeText),
       noticeText.slice(0, 48) + "…",
     );
+    check(
+      "e3b2. 离线自建命令已收起（默认不在提示块正文里，减少常驻文字）",
+      !/whisper-server -m/.test(noticeText),
+      noticeText.slice(0, 40) + "…",
+    );
+    // 展开详情后命令应当可见 —— 信息没丢，只是不占屏
+    await page.locator('[data-testid="asr-service-notice"] details').first().evaluate((el) => {
+      el.open = true;
+    });
+    const expanded = (await page.locator('[data-testid="asr-service-notice"]').innerText()).replace(/\s+/g, " ");
+    check(
+      "e3b3. 展开「详情」后能看到 whisper.cpp / faster-whisper 的启动命令",
+      /whisper-server -m/.test(expanded) && /faster-whisper-server/.test(expanded),
+      expanded.slice(0, 60) + "…",
+    );
+    await page.locator('[data-testid="asr-service-notice"] details').first().evaluate((el) => {
+      el.open = false;
+    });
     await page.locator(".settings-content").evaluate((el) => {
       el.scrollTop = 0;
     });
@@ -507,7 +831,7 @@ async function main() {
     await shot(page, "07-after-settings.png");
 
     // e10. 打开「停止后生成完整纪要」并保存（验证草稿态 → 保存 → 持久化）
-    await page.locator('[data-testid="open-settings"]').click();
+    await page.locator('[data-testid="sidebar-settings"]').click();
     await waitFor(() => page.locator('[data-testid="settings-dialog"]').isVisible(), { timeout: 8000 });
     await page.locator('[data-testid="tab-ai"]').click();
     const finalSwitch = page.locator('[data-testid="ai-final-report"]');
@@ -519,25 +843,38 @@ async function main() {
       timeout: 8000,
       label: "等待保存后关闭",
     });
-    await page.locator('[data-testid="open-settings"]').click();
+    await page.locator('[data-testid="sidebar-settings"]').click();
     await waitFor(() => page.locator('[data-testid="settings-dialog"]').isVisible(), { timeout: 8000 });
     const persisted = await page.locator('[data-testid="ai-final-report"]').getAttribute("aria-checked");
     check("e10. 设置保存后持久化（停止后生成完整纪要已开启）", persisted === "true", `aria-checked=${persisted}`);
     await page.keyboard.press("Escape");
     await waitFor(async () => (await page.locator('[data-testid="settings-dialog"]').count()) === 0, { timeout: 8000 });
 
-    /* ---------------------------------------------------------- 历史会话 */
+    /* ---------------------------------------------------------- 历史（sidebar + Ctrl+K） */
+    // Ctrl+K 不再是「打开历史视图」，而是聚焦左侧历史栏的搜索框
     await page.keyboard.press("Control+k");
-    await waitFor(() => page.locator('[data-testid="history-view"]').isVisible(), {
-      timeout: 8000,
-      label: "等待历史会话视图",
-    });
-    const historyText = await page.locator('[data-testid="history-view"]').innerText();
-    check("f1. Ctrl+K 打开历史会话视图", true, historyText.split("\n")[0]);
-    await shot(page, "08-history.png");
+    const focused = await waitFor(
+      async () => {
+        const id = await page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? "");
+        return id === "sidebar-search" ? id : "";
+      },
+      { timeout: 5000, interval: 150, label: "等待 Ctrl+K 聚焦 sidebar 搜索框" },
+    ).catch(() => "");
+    check(
+      "f1. Ctrl+K 聚焦 sidebar 搜索框（不再打开独立历史视图）",
+      focused === "sidebar-search" && (await page.locator('[data-testid="history-view"]').count()) === 0,
+      `activeElement=${focused || "未聚焦"}`,
+    );
 
-    // 回到录制视图，验证停止流程
-    await page.keyboard.press("Control+k");
+    // 搜索框可用：输入关键字过滤历史列表
+    await page.locator('[data-testid="sidebar-search"]').fill("会议");
+    await sleep(300);
+    const searched = await page.locator('[data-testid="sidebar-list"] .sb-row').count();
+    await page.locator('[data-testid="sidebar-search"]').fill("");
+    await sleep(300);
+    check("f1b. sidebar 搜索框可过滤历史会话", searched >= 1, `匹配 ${searched} 条`);
+
+    // 回到录制视图，验证停止流程（详情页有「返回当前会议」，录制视图本来就在）
     await waitFor(() => page.locator('[data-testid="stop-recording"]').isVisible(), {
       timeout: 8000,
       label: "等待回到录制视图",
@@ -558,6 +895,56 @@ async function main() {
     }).catch(() => false);
     check("f3. 停止后自动生成并展示完整会议纪要", Boolean(reportShown));
     await shot(page, "09-stopped.png");
+
+    /* ---------------------------------------------------------- 左侧历史 sidebar */
+    const sbRows = page.locator('[data-testid="sidebar-list"] .sb-row');
+    const rowCount = await waitFor(async () => {
+      const n = await sbRows.count();
+      return n >= 1 ? n : 0;
+    }, { timeout: 10000, interval: 300, label: "等待 sidebar 列出历史会话" }).catch(() => 0);
+    check("l1. 主界面左侧 sidebar 列出历史会话", (await page.locator('[data-testid="sidebar"]').isVisible()) && rowCount >= 1, `${rowCount} 条`);
+
+    const rowText = (await sbRows.first().innerText()).replace(/\s+/g, " ");
+    const rowStats = await sbRows.first().locator(".sb-stats").count();
+    check(
+      "l2. 每条显示标题 / 创建时间 / 时长 / 段数字数 / 是否有纪要",
+      /段数/.test(rowText) && /字数/.test(rowText) && /纪要/.test(rowText) && /\d{4}-\d{2}-\d{2}/.test(rowText) && rowStats === 1,
+      rowText.slice(0, 64),
+    );
+
+    const sbId = ((await sbRows.first().locator('[data-testid^="sidebar-open-"]').getAttribute("data-testid")) ?? "").replace("sidebar-open-", "");
+    await sbRows.first().hover();
+    await sleep(250);
+    await shot(page, "24-sidebar-hover-actions.png");
+    check(
+      "l3. hover 历史条目显示重命名 / 删除入口",
+      (await page.locator(`[data-testid="sidebar-rename-${sbId}"]`).count()) === 1 &&
+        (await page.locator(`[data-testid="sidebar-delete-${sbId}"]`).count()) === 1,
+      `条目 ${sbId}`,
+    );
+
+    // 重命名（复用原历史视图的那套逻辑与二次确认）
+    await page.locator(`[data-testid="sidebar-rename-${sbId}"]`).click();
+    await waitFor(() => page.locator(`[data-testid="sidebar-rename-input-${sbId}"]`).isVisible(), { timeout: 5000 });
+    await page.locator(`[data-testid="sidebar-rename-input-${sbId}"]`).fill("产品周会（改名验证）");
+    await page.locator(`[data-testid="sidebar-rename-input-${sbId}"]`).press("Enter");
+    const renamed = await waitFor(async () => {
+      const t = await sbRows.first().innerText();
+      return /改名验证/.test(t) ? t.replace(/\s+/g, " ") : "";
+    }, { timeout: 8000, interval: 200, label: "等待重命名生效" }).catch(() => "");
+    check("l4. sidebar 重命名会话", Boolean(renamed), renamed.slice(0, 40));
+
+    // 点击历史条目 → 打开详情 → 返回当前会议
+    await page.locator(`[data-testid="sidebar-open-${sbId}"]`).click();
+    await waitFor(() => page.locator('[data-testid="detail-title"]').isVisible(), { timeout: 8000, label: "等待会话详情" });
+    const sidebarDetailTitle = await page.locator('[data-testid="detail-title"]').innerText();
+    check("l5. 点击历史条目在主区域打开会话详情", /改名验证/.test(sidebarDetailTitle), sidebarDetailTitle);
+    await page.locator('[data-testid="detail-back"]').click();
+    const backHome = await waitFor(
+      () => page.locator('[data-testid="start-recording"]').isVisible().catch(() => false),
+      { timeout: 8000, interval: 200, label: "等待返回当前会议" },
+    ).catch(() => false);
+    check("l6. 详情页「返回当前会议」回到主界面", backHome);
 
     /* ---------------------------------------------------------- 会话详情 */
     await page.locator('[data-testid="goto-detail"]').click();
@@ -597,8 +984,22 @@ async function main() {
     check("g4. 导出 md 成功（浏览器下走 mock 路径）", Boolean(exportToast), String(exportToast).replace(/\s+/g, " ").slice(0, 50));
     await shot(page, "11-export.png");
 
+    /* ---------------------------------------------------------- sidebar 删除（二次确认） */
+    await page.locator('[data-testid="sidebar-list"] .sb-row').first().hover();
+    await page.locator(`[data-testid="sidebar-delete-${sbId}"]`).click();
+    const confirmShown = await waitFor(
+      () => page.locator(`[data-testid="sidebar-confirm-${sbId}"]`).isVisible().catch(() => false),
+      { timeout: 5000, interval: 200, label: "等待删除确认" },
+    ).catch(() => false);
+    await page.locator(`[data-testid="sidebar-delete-confirm-${sbId}"]`).click();
+    const emptied = await waitFor(
+      () => page.locator('[data-testid="sidebar-empty"]').isVisible().catch(() => false),
+      { timeout: 8000, interval: 200, label: "等待列表清空" },
+    ).catch(() => false);
+    check("l7. sidebar 删除会话有二次确认，删除后回到空历史引导", confirmShown && emptied);
+
     /* ---------------------------------------------------------- 主题 / 字号 */
-    await page.locator('[data-testid="open-settings"]').click();
+    await page.locator('[data-testid="sidebar-settings"]').click();
     await waitFor(() => page.locator('[data-testid="settings-dialog"]').isVisible(), { timeout: 8000 });
     await page.locator('[data-testid="tab-general"]').click();
     await waitFor(() => page.locator('[data-testid="theme-select"]').isVisible(), { timeout: 8000 });
@@ -615,7 +1016,7 @@ async function main() {
     await shot(page, "12-light.png");
 
     // 切回深色默认值，保持环境干净
-    await page.locator('[data-testid="open-settings"]').click();
+    await page.locator('[data-testid="sidebar-settings"]').click();
     await waitFor(() => page.locator('[data-testid="settings-dialog"]').isVisible(), { timeout: 8000 });
     await page.locator('[data-testid="tab-general"]').click();
     await page.locator('[data-testid="theme-select"]').selectOption("dark");
@@ -623,24 +1024,53 @@ async function main() {
     await page.locator('[data-testid="settings-save"]').click();
     await waitFor(async () => (await page.locator('[data-testid="settings-dialog"]').count()) === 0, { timeout: 8000 });
 
+    /* ---------------------------------------------------------- sidebar 折叠 */
+    // 宽窗口：手动折叠 → 记忆到 localStorage
+    await page.locator('[data-testid="toggle-sidebar"]').click();
+    await waitFor(
+      async () => (await page.locator('[data-testid="sidebar"]').getAttribute("data-collapsed")) === "true",
+      { timeout: 5000, interval: 150, label: "等待 sidebar 折叠" },
+    ).catch(() => {});
+    const collapsedAttr = await page.locator('[data-testid="sidebar"]').getAttribute("data-collapsed");
+    const collapsedStored = await page.evaluate(() => localStorage.getItem("meeting-hear:sidebar-collapsed"));
+    const collapsedKeepsNew = await page.locator('[data-testid="sidebar-new-meeting"]').isVisible();
+    const collapsedHidesSearch = (await page.locator('[data-testid="sidebar-search"]').count()) === 0;
+    check(
+      "m1. 折叠 sidebar 为窄条（保留新建按钮，隐藏搜索框）",
+      collapsedAttr === "true" && collapsedKeepsNew && collapsedHidesSearch,
+      `data-collapsed=${collapsedAttr}，新建按钮=${collapsedKeepsNew}，搜索框已隐藏=${collapsedHidesSearch}`,
+    );
+    check("m2. 折叠状态记忆在 localStorage", collapsedStored === "1", `meeting-hear:sidebar-collapsed=${collapsedStored}`);
+
+    // 展开后 Ctrl+K 仍然能聚焦搜索框
+    await page.locator('[data-testid="toggle-sidebar"]').click();
+    await sleep(200);
+    await page.keyboard.press("Control+k");
+    const focusAgain = await page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? "");
+    check("m3. 展开后 Ctrl+K 依旧聚焦搜索框", focusAgain === "sidebar-search", `activeElement=${focusAgain}`);
+    await page.locator('[data-testid="sidebar-search"]').blur().catch(() => {});
+
     /* ---------------------------------------------------------- 最小窗口尺寸 */
     await page.setViewportSize({ width: 1024, height: 640 });
     await sleep(500);
     const minOk = await page.locator('[data-testid="summary-panel"]').isVisible();
     check("i1. 最小窗口 1024×640 布局可用", minOk);
+    const narrowCollapsed = await page.locator('[data-testid="sidebar"]').getAttribute("data-collapsed");
+    check("i2. 窗口 < 1100px 时 sidebar 自动折叠为窄条", narrowCollapsed === "true", `data-collapsed=${narrowCollapsed}`);
+    await shot(page, "25-sidebar-collapsed.png");
     await shot(page, "14-min-window.png");
     await page.setViewportSize({ width: 1360, height: 860 });
+    await sleep(300);
 
     /* ------------- 未配置识别服务时，开始录音要给出引导而不是静默失败 ------------- */
-    // 从会话详情切回录制视图（Ctrl+K 在 详情 → 历史 → 录制 之间切换）
-    await page.keyboard.press("Control+k");
-    await page.keyboard.press("Control+k");
+    // 从会话详情点「返回当前会议」回到录制视图
+    await page.locator('[data-testid="detail-back"]').click();
     await waitFor(() => page.locator('[data-testid="start-recording"]').isVisible(), {
       timeout: 8000,
       label: "等待回到录制视图",
     });
 
-    await page.locator('[data-testid="open-settings"]').click();
+    await page.locator('[data-testid="sidebar-settings"]').click();
     await waitFor(() => page.locator('[data-testid="settings-dialog"]').isVisible(), { timeout: 8000 });
     await page.locator('[data-testid="tab-asr"]').click();
     const enabledSwitch = page.locator('[data-testid="asr-enabled"]');
@@ -662,11 +1092,54 @@ async function main() {
     );
     check("j2. 校验失败时不会进入录音状态", (await page.locator('[data-testid="start-recording"]').isVisible()) === true);
 
+    // j3. sidebar 的「新建会议」走同一条校验路径（而不是静默失败）
+    await page.keyboard.press("Escape");
+    await waitFor(async () => (await page.locator('[data-testid="settings-dialog"]').count()) === 0, { timeout: 8000 });
+    await page.locator('[data-testid="sidebar-new-meeting"]').click();
+    const guardDialog2 = await waitFor(
+      () => page.locator('[data-testid="settings-panel-asr"]').isVisible().catch(() => false),
+      { timeout: 8000, interval: 200, label: "等待「新建会议」触发引导" },
+    ).catch(() => false);
+    const guardToast2 = (await page.locator('[data-testid="toasts"]').innerText().catch(() => "")).replace(/\s+/g, " ");
+    check(
+      "j3. 识别服务不可用时点 sidebar「新建会议」→ 触发引导并打开设置（未静默失败）",
+      guardDialog2 && /语音识别/.test(guardToast2),
+      `弹窗=${guardDialog2}，提示=${guardToast2.slice(0, 46)}`,
+    );
+
     // 还原：重新打开识别开关，保持环境干净
+    await page.locator('[data-testid="tab-asr"]').click();
     const restoreSwitch = page.locator('[data-testid="asr-enabled"]');
     if ((await restoreSwitch.getAttribute("aria-checked")) !== "true") await restoreSwitch.click();
     await page.locator('[data-testid="settings-save"]').click();
     await waitFor(async () => (await page.locator('[data-testid="settings-dialog"]').count()) === 0, { timeout: 8000 });
+
+    /* ------------- 设置 → 通用 → 重新运行配置向导 ------------- */
+    await page.locator('[data-testid="sidebar-settings"]').click();
+    await waitFor(() => page.locator('[data-testid="settings-dialog"]').isVisible(), { timeout: 8000 });
+    await page.locator('[data-testid="tab-general"]').click();
+    await waitFor(() => page.locator('[data-testid="rerun-onboarding"]').isVisible(), { timeout: 8000 });
+    await page.locator('[data-testid="rerun-onboarding"]').click();
+    const wizardAgain = await waitFor(
+      () => page.locator('[data-testid="onboarding-wizard"]').isVisible().catch(() => false),
+      { timeout: 8000, interval: 200, label: "等待重新打开向导" },
+    ).catch(() => false);
+    check(
+      "n1. 设置 → 通用「重新运行配置向导」会重新打开向导",
+      wizardAgain && (await page.locator('[data-testid="settings-dialog"]').count()) === 0,
+    );
+    // 走完向导，保持环境干净
+    await page.locator('[data-testid="onboarding-skip-all"]').click();
+    await waitFor(async () => (await page.locator('[data-testid="onboarding-wizard"]').count()) === 0, {
+      timeout: 8000,
+      interval: 200,
+      label: "等待向导关闭",
+    });
+    check("n2. 向导「跳过」也会把 onboardingCompleted 置为 true（不再弹出）", true);
+
+    /* ------------- 各平台的内录引导卡片（用 mock 参数模拟平台与「无内录源」） ------------- */
+    await checkLoopbackGuide(browser, "macos", "brew install blackhole-2ch", "26-loopback-guide-macos.png");
+    await checkLoopbackGuide(browser, "linux", "sudo apt install pulseaudio-utils", "27-loopback-guide-linux.png");
 
     /* ---------------------------------------------------------- console */
     check(

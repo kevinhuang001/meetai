@@ -80,4 +80,6 @@ export const api = {
   /* ---------------- 应用 ---------------- */
   getAppInfo: () => call<AppInfo>("get_app_info"),
   openPath: (path: string) => call<void>("open_path", { path }),
+  /** 用系统默认浏览器打开链接（只放行 http/https） */
+  openUrl: (url: string) => call<void>("open_url", { url }),
 };

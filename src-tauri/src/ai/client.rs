@@ -488,16 +488,9 @@ fn map_reqwest_error(e: reqwest::Error) -> AppError {
     }
 }
 
-/// 判断是否本机地址（本机地址一律绕过代理）
+/// 本机/局域网/内网穿透地址一律绕过系统代理（判定逻辑见 [`crate::util::should_bypass_proxy`]）
 fn is_local_url(url: &str) -> bool {
-    let Ok(parsed) = Url::parse(url) else {
-        return false;
-    };
-    match parsed.host_str() {
-        Some("localhost") | Some("127.0.0.1") | Some("0.0.0.0") | Some("[::1]") | Some("::1") => true,
-        Some(host) => host.starts_with("127.") || host.ends_with(".local"),
-        None => false,
-    }
+    crate::util::should_bypass_proxy(url)
 }
 
 #[allow(dead_code)]

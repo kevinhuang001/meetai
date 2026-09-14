@@ -111,6 +111,8 @@ export interface GeneralSettings {
   dataDir: string | null;
   /** 保存 API Key 到本地配置文件（0600 权限） */
   persistApiKey: boolean;
+  /** 首次配置向导是否已完成 */
+  onboardingCompleted: boolean;
 }
 
 export interface Settings {

@@ -79,7 +79,7 @@ export function SessionDetailView() {
 
   if (!detailId) {
     return (
-      <div className="history">
+      <div className="stage">
         <div className="empty-inline">没有选中的会话</div>
       </div>
     );
@@ -90,8 +90,8 @@ export function SessionDetailView() {
       <div className="stage detail">
         <header className="detail-head">
           <div className="detail-head-left">
-            <Button variant="ghost" onClick={() => setView("history")} testId="detail-back" ariaLabel="返回历史会话">
-              ← 返回
+            <Button variant="ghost" onClick={() => setView("recording")} testId="detail-back" ariaLabel="返回当前会议">
+              ← 返回当前会议
             </Button>
             <div className="detail-title">
               <h1 data-testid="detail-title">{detail?.title ?? "加载中…"}</h1>

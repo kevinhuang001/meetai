@@ -13,15 +13,17 @@ import {
   type SessionUpdatedEvent,
 } from "./lib/contract";
 import { applyAppearance, watchSystemTheme } from "./lib/appearance";
+import { focusSidebarSearch } from "./lib/sidebarSearch";
 import { guard, useLevelStore, usePartialStore, useStore } from "./store";
 import { startRecording, stopRecording } from "./actions";
 import { TopBar } from "./components/TopBar";
+import { Sidebar } from "./components/Sidebar";
 import { RecordingView } from "./components/RecordingView";
-import { HistoryView } from "./components/HistoryView";
 import { SessionDetailView } from "./components/SessionDetailView";
 import { ControlBar } from "./components/ControlBar";
 import { Toasts } from "./components/Toasts";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
+import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 
 async function bootstrap(): Promise<void> {
   const st = useStore.getState();
@@ -46,12 +48,17 @@ async function bootstrap(): Promise<void> {
     }
   }
   st.setReady(true);
+
+  // 首次运行（settings.general.onboardingCompleted === false）时打开配置向导。
+  // 设置没读出来就不弹，免得向导里没数据可编辑。
+  if (settings && !settings.general.onboardingCompleted) st.openOnboarding();
 }
 
 export default function App() {
   const ready = useStore((s) => s.ready);
   const view = useStore((s) => s.view);
   const settings = useStore((s) => s.settings);
+  const onboardingOpen = useStore((s) => s.onboardingOpen);
 
   /* 启动：拉取设置、音频设备与进行中的会话（识别服务全部走 HTTP，无需本地模型） */
   useEffect(() => {
@@ -145,7 +152,11 @@ export default function App() {
       }
       if (mod && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
-        st.setView(st.view === "history" ? "recording" : "history");
+        // Ctrl+K 不再打开独立的历史视图，而是聚焦左侧历史栏的搜索框。
+        // 窗口很窄时历史栏是自动折叠的，这里按用户的显式请求先展开。
+        st.setSidebarCollapsed(false);
+        st.setSidebarNarrow(false);
+        window.setTimeout(() => focusSidebarSearch(), 0);
         return;
       }
       if (e.key === "Escape" && st.settingsOpen) {
@@ -161,13 +172,12 @@ export default function App() {
     <div className="app">
       <TopBar />
       <main className="main">
+        <Sidebar />
         {!ready ? (
           <div className="boot">
             <span className="spinner" aria-hidden="true" />
             正在启动…
           </div>
-        ) : view === "history" ? (
-          <HistoryView />
         ) : view === "detail" ? (
           <SessionDetailView />
         ) : (
@@ -177,6 +187,7 @@ export default function App() {
       {view === "recording" ? <ControlBar /> : null}
       <Toasts />
       <SettingsDialog />
+      {onboardingOpen ? <OnboardingWizard /> : null}
     </div>
   );
 }

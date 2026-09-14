@@ -1,9 +1,8 @@
 /** 底栏控制条：电平表 + 实时指标 + 录音控制按钮 */
 import { useMemo } from "react";
-import { formatDuration } from "../lib/contract";
-import { asrServiceLabel } from "../lib/settings";
+import { asrReadiness, asrServiceLabel } from "../lib/settings";
 import { useLevelStore, useStore } from "../store";
-import { importAudioFile, pauseOrResume, startRecording, stopRecording, summarizeNow } from "../actions";
+import { importAudioFile, pauseOrResume, startRecording, stopRecording } from "../actions";
 import { Button } from "./ui";
 
 function LevelMeter({ kind, label, hint }: { kind: "mic" | "loop"; label: string; hint: string }) {
@@ -36,7 +35,6 @@ function LevelMeter({ kind, label, hint }: { kind: "mic" | "loop"; label: string
 
 function Metrics() {
   const stats = useLevelStore((s) => s.stats);
-  const durationMs = useLevelStore((s) => s.durationMs);
   const settings = useStore((s) => s.settings);
   const sessionService = useStore((s) => s.session?.config.modelId ?? null);
   // config.modelId 现在装的是「服务商 · 模型」描述（字段名沿用冻结契约）
@@ -44,20 +42,20 @@ function Metrics() {
   return (
     <div className="metrics" data-testid="metrics">
       <span className="metric">
-        <em>识别服务</em>
+        <em>识别</em>
         <b className="mono svc" data-testid="metric-asr-service" title={service}>
           {service}
         </b>
       </span>
-      <span className="metric">
-        <em>RTF</em>
-        <b className="mono" data-testid="metric-rtf">
-          {stats.rtf ? stats.rtf.toFixed(2) : "—"}
-        </b>
-      </span>
+      {/* 只留一眼要看的：识别服务 + 延迟 + 字数。
+          RTF 与句数、音频时长属于排查用信息，塞进延迟的悬停提示里即可。 */}
       <span className="metric">
         <em>延迟</em>
-        <b className="mono" data-testid="metric-latency">
+        <b
+          className="mono"
+          data-testid="metric-latency"
+          title={`实时率 RTF ${stats.rtf ? stats.rtf.toFixed(2) : "—"}（<1 表示跟得上实时）· 共 ${stats.segments} 句`}
+        >
           {stats.latencyMs ? `${stats.latencyMs} ms` : "—"}
         </b>
       </span>
@@ -67,14 +65,6 @@ function Metrics() {
           {stats.chars}
         </b>
       </span>
-      <span className="metric">
-        <em>句数</em>
-        <b className="mono">{stats.segments}</b>
-      </span>
-      <span className="metric">
-        <em>音频</em>
-        <b className="mono">{formatDuration(durationMs)}</b>
-      </span>
     </div>
   );
 }
@@ -83,7 +73,7 @@ export function ControlBar() {
   const session = useStore((s) => s.session);
   const sources = useStore((s) => s.audioSources);
   const settings = useStore((s) => s.settings);
-  const summarizing = useStore((s) => s.summarizing);
+  const asrReady = useStore((s) => asrReadiness(s.settings).ready);
 
   const micLabel = useMemo(() => {
     if (session?.config.micLabel) return session.config.micLabel;
@@ -104,13 +94,11 @@ export function ControlBar() {
 
   return (
     <footer className="controlbar">
+      {/* 只画真正启用的声源，不再为关闭的声源显示占位文案 */}
       <div className="levels">
-        {micOn ? <LevelMeter kind="mic" label={micLabel} hint="麦克风" /> : <div className="level off">麦克风已关闭</div>}
-        {loopOn ? (
-          <LevelMeter kind="loop" label={loopLabel} hint="系统声音" />
-        ) : (
-          <div className="level off">系统内录已关闭</div>
-        )}
+        {micOn ? <LevelMeter kind="mic" label={micLabel} hint="麦克风" /> : null}
+        {loopOn ? <LevelMeter kind="loop" label={loopLabel} hint="系统声音" /> : null}
+        {!micOn && !loopOn ? <div className="level off">未启用任何音频来源</div> : null}
       </div>
 
       <Metrics />
@@ -145,24 +133,19 @@ export function ControlBar() {
         >
           ⤓ 导入音频
         </Button>
-        <Button
-          variant="ghost"
-          onClick={() => void summarizeNow(session?.id ?? null)}
-          disabled={summarizing}
-          testId="summarize-now-bar"
-          ariaLabel="立即总结"
-        >
-          ✦ 立即总结
-        </Button>
-        <Button
-          variant="ghost"
-          onClick={() => useStore.getState().openSettings("asr")}
-          testId="open-asr-settings-bar"
-          ariaLabel="识别服务设置"
-          title="打开「设置 → 语音识别」，配置识别服务商"
-        >
-          ☁ 识别服务
-        </Button>
+        {/* 「立即总结」与「识别服务」原本在这里也有一份，但右侧纪要面板和
+            左侧 sidebar 底部已经各有一个，属于纯重复，这里只在识别服务
+            尚未配置时保留一个引导入口。 */}
+        {asrReady ? null : (
+          <Button
+            variant="primary"
+            onClick={() => useStore.getState().openSettings("asr")}
+            testId="open-asr-settings-bar"
+            ariaLabel="配置识别服务"
+          >
+            配置识别服务
+          </Button>
+        )}
       </div>
     </footer>
   );

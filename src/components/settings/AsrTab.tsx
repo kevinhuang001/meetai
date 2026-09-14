@@ -122,23 +122,25 @@ export function AsrTab({ draft, set }: TabProps) {
 
   return (
     <div className="tab-body">
+      {/* 说明压成一行 + 可展开详情：这些命令与首次向导第 2 步重复，
+          常驻在设置页里只是噪音，需要的人点开就能看到。 */}
       <div className="warn-bar" data-testid="asr-service-notice">
         <strong>本应用不含识别模型，需要外部识别服务</strong>
-        <span>
-          转写全部通过 HTTP 调用你配置的服务商：云端 OpenAI 兼容接口（Groq / OpenAI / 硅基流动…），或者自建服务。
-          没有配置可用的服务商时无法开始录音。
-        </span>
-        <span>想完全离线：在本机起一个 whisper.cpp server，再把 Base URL 指向它，例如</span>
-        <code className="notice-code">whisper-server -m ggml-large-v3-turbo.bin --port 8080</code>
-        <span>或者用 faster-whisper-server（OpenAI 兼容）：</span>
-        <code className="notice-code">docker run -p 8000:8000 fedirz/faster-whisper-server</code>
+        <span>转写通过 HTTP 调用你配置的服务商；没配好就无法开始录音。</span>
+        <details className="notice-details">
+          <summary>想完全离线？点开看自建服务的命令</summary>
+          <code className="notice-code">whisper-server -m ggml-large-v3-turbo.bin --port 8080</code>
+          <span>重启应用后在「服务商」里选「本地 whisper.cpp server」，Base URL 填 http://127.0.0.1:8080，路径 /inference。</span>
+          <code className="notice-code">docker run -p 8000:8000 fedirz/faster-whisper-server</code>
+          <span>或任何 OpenAI 兼容的 /audio/transcriptions 服务，Base URL 填对应地址即可。</span>
+        </details>
       </div>
 
       <section className="card">
         <h3>总开关</h3>
         <SwitchRow
           label="启用语音识别"
-          hint="关闭后无法开始录音；音频采集与 AI 纪要都不受影响"
+          hint="关闭后无法开始录音；音频采集与 AI 纪要不受影响"
           checked={asr.enabled}
           onChange={(v) => patchAsr({ enabled: v })}
           testId="asr-enabled"
@@ -149,7 +151,7 @@ export function AsrTab({ draft, set }: TabProps) {
         <h3>
           识别服务商 <Badge>{asr.providers.length}</Badge>
         </h3>
-        <p className="dim small">音频会被上传到下面选中的服务商。云端服务需要 API Key，本地服务可以留空。</p>
+        <p className="dim small">音频会上传到选中的服务商；云端需要 API Key，本地服务留空。</p>
 
         <div className="provider-list" data-testid="asr-provider-list">
           {asr.providers.map((p) => (

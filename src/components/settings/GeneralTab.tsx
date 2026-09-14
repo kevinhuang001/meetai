@@ -2,6 +2,7 @@
 import { api } from "../../lib/api";
 import type { GeneralSettings } from "../../lib/contract";
 import { applyAppearance } from "../../lib/appearance";
+import { restartOnboarding } from "../../actions";
 import { guard, useStore } from "../../store";
 import { Button, Field, Select, Slider, SwitchRow, TextInput } from "../ui";
 import type { TabProps } from "./SettingsDialog";
@@ -104,13 +105,25 @@ export function GeneralTab({ draft, set }: TabProps) {
       </section>
 
       <section className="card">
+        <h3>首次配置向导</h3>
+        <p className="dim small" data-testid="onboarding-state">
+          {general.onboardingCompleted
+            ? "向导已完成。想重新过一遍语音识别、AI 接口与音频设备的配置，可以再运行一次。"
+            : "向导尚未完成，下次启动会重新弹出。"}
+        </p>
+        <Button variant="default" onClick={() => void restartOnboarding()} testId="rerun-onboarding">
+          ↻ 重新运行配置向导
+        </Button>
+      </section>
+
+      <section className="card">
         <h3>快捷键</h3>
         <ul className="shortcut-list">
           <li>
             <kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>Enter</kbd> <span>开始 / 停止录音</span>
           </li>
           <li>
-            <kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>K</kbd> <span>打开历史会话</span>
+            <kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>K</kbd> <span>聚焦左侧历史栏的搜索框</span>
           </li>
           <li>
             <kbd>Esc</kbd> <span>关闭设置 / 取消编辑</span>
