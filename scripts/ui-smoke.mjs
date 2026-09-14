@@ -46,13 +46,33 @@ async function waitFor(fn, { timeout = 20000, interval = 200, label = "" } = {})
   throw new Error(`等待超时 ${timeout}ms ${label}${lastErr ? ` (${lastErr.message})` : ""}`);
 }
 
-async function portAlive() {
+// 探测候选地址：vite 绑定到 IPv4 还是 IPv6 取决于系统对 localhost 的解析顺序，
+// 只探测一个地址会在部分环境（例如 GitHub Actions runner）上永远连不上。
+const PROBE_URLS = [BASE, "http://127.0.0.1:1420", "http://[::1]:1420", "http://localhost:1420"];
+
+async function probeOnce(url) {
   try {
-    const r = await fetch(BASE, { signal: AbortSignal.timeout(1500) });
+    const r = await fetch(url, { signal: AbortSignal.timeout(1500) });
     return r.ok || r.status === 404;
   } catch {
     return false;
   }
+}
+
+async function portAlive() {
+  for (const url of PROBE_URLS) {
+    if (await probeOnce(url)) return true;
+  }
+  return false;
+}
+
+// 超时时把每个候选地址的结果都打出来，避免只看到一句「等待超时」
+async function probeReport() {
+  const lines = [];
+  for (const url of PROBE_URLS) {
+    lines.push(`  ${url} → ${(await probeOnce(url)) ? "可达" : "不可达"}`);
+  }
+  return lines.join("\n");
 }
 
 async function startDevServer() {
@@ -76,6 +96,7 @@ async function startDevServer() {
     await waitFor(() => portAlive(), { timeout: 60000, interval: 400, label: "等待 vite 端口 1420" });
   } catch (e) {
     console.log("[setup] vite 日志：\n" + logs.join(""));
+    console.log("[setup] 候选地址探测结果：\n" + (await probeReport()));
     throw e;
   }
   console.log("[setup] vite 已就绪");
