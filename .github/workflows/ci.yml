@@ -71,8 +71,26 @@ jobs:
       - name: 前端构建
         run: pnpm build
 
+      # 用 bash 跑并落盘日志：失败时把关键行转成 GitHub annotation，
+      # 这样即使没有仓库 admin 权限（无法下载 job 日志）也能从 API 读到失败原因。
       - name: Rust 单元测试
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+        shell: bash
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture 2>&1 | tee unit-test.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Rust 失败诊断
+        if: failure()
+        shell: bash
+        run: |
+          if [ -f unit-test.log ]; then
+            echo "===== 失败摘要 ====="
+            grep -E "^(error|failures:|---- |thread |assertion|  left|  right|test result)" -A3 unit-test.log | head -80 || true
+            echo "===== 上报为 annotation ====="
+            grep -E "^(error|failures:|---- |thread '.*' panicked|test result)" -A3 unit-test.log | head -50 | while IFS= read -r line; do
+              printf '::error::%s\n' "$line"
+            done
+          fi
 
       - name: 前后端契约一致性测试
         run: cargo test --manifest-path src-tauri/Cargo.toml --test contract

@@ -37,7 +37,9 @@ const VIRTUAL_DEVICE_HINTS: &[&str] = &[
 pub fn list() -> Vec<AudioSourceInfo> {
     use wasapi::{DeviceEnumerator, Direction};
 
-    if let Err(e) = wasapi::initialize_mta() {
+    // 注意：wasapi 0.24 的 initialize_mta() 返回的是 HRESULT 结构体而不是 Result，
+    // 且 HRESULT 没有实现 Debug，必须用它的 ok() 转成 Result 再处理。
+    if let Err(e) = wasapi::initialize_mta().ok() {
         tracing::warn!("初始化 COM(MTA) 失败：{e}");
     }
 
@@ -114,6 +116,7 @@ pub fn run(
     use wasapi::{DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
 
     wasapi::initialize_mta()
+        .ok()
         .map_err(|e| AppError::audio(format!("初始化 COM 失败：{e}")))?;
 
     let enumerator = DeviceEnumerator::new()
@@ -419,9 +422,10 @@ mod macos {
                 let detail = device
                     .default_input_config()
                     .map(|c| {
+                        // 注意：cpal 0.18 的 sample_rate() 返回的是 u32，没有 .0 字段
                         format!(
                             "{} Hz · {} 声道 · 虚拟声卡",
-                            c.sample_rate().0,
+                            c.sample_rate(),
                             c.channels()
                         )
                     })

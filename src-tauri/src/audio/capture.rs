@@ -811,9 +811,11 @@ mod tests {
         )
         .expect("启动本身应当成功（错误在采集线程里上报）");
 
-        // 采集线程应该上报一条可读错误
+        // 采集线程应该上报一条可读错误。
+        // 超时给得比较宽松：macOS 的 CoreAudio 在没有音频设备的 runner 上
+        // 初始化可能要好几种，卡在 5 秒会变成偶发失败。
         let msg = err_rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(30))
             .expect("应当收到设备错误");
         assert!(msg.contains("麦克风采集失败"), "实际：{msg}");
         handle.stop();
