@@ -11,7 +11,7 @@
 use std::time::{Duration, Instant};
 
 use reqwest::multipart::{Form, Part};
-use reqwest::{Client, Url};
+use reqwest::Client;
 use serde::Serialize;
 use serde_json::Value;
 

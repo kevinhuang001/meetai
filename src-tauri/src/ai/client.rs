@@ -9,7 +9,7 @@
 
 use std::time::{Duration, Instant};
 
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
