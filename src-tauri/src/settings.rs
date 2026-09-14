@@ -225,6 +225,11 @@ impl VadSettings {
  * AI 接口
  * ========================================================================== */
 
+/// serde 默认值：用于「缺失字段应当为 true」的开关
+fn return_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AiProvider {
@@ -238,6 +243,11 @@ pub struct AiProvider {
     pub json_mode: bool,
     /// 请求时关闭「思考」（reasoning_effort=none）。
     /// 纪要任务不需要思维链，而思考型模型会把 token 预算烧在推理上、正文为空。
+    ///
+    /// **必须用 `default = "true"`**：结构体上的 `#[serde(default)]` 对缺失字段
+    /// 取的是 `bool::default()` = false，老配置文件升级上来会静默变成「不关思考」，
+    /// 然后每次都报「内容为空」—— 这正是踩过的坑。
+    #[serde(default = "return_true")]
     pub no_thinking: bool,
     pub timeout_secs: u32,
     /// 额外请求头，例如自建网关需要的鉴权字段
@@ -669,6 +679,23 @@ mod tests {
             ..Default::default()
         };
         assert!(!no_host.is_usable());
+    }
+
+    #[test]
+    fn old_config_without_no_thinking_defaults_to_disabling_it() {
+        // 老配置文件里没有 noThinking 字段。若按 bool 的默认值 false 处理，
+        // 老用户升级后会继续被思考型模型坑（正文为空），而新装用户却正常 ——
+        // 这种「只有老用户坏」的问题最难查。
+        let text = r#"{"ai":{"providers":[{"id":"ollama-local","name":"本地","baseUrl":"http://localhost:11434/v1","model":"qwen3.5:2b"}]}}"#;
+        let s: Settings = serde_json::from_str(text).unwrap();
+        assert!(
+            s.ai.providers[0].no_thinking,
+            "老配置缺失该字段时必须默认关思考"
+        );
+        // 显式关掉要能生效
+        let text = r#"{"ai":{"providers":[{"id":"x","model":"m","noThinking":false}]}}"#;
+        let s: Settings = serde_json::from_str(text).unwrap();
+        assert!(!s.ai.providers[0].no_thinking);
     }
 
     #[test]

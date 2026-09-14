@@ -28,6 +28,12 @@ pub fn sections_to_markdown(sections: &[SummarySection]) -> String {
     out.join("\n")
 }
 
+/// 一次纪要更新的输出上限。
+///
+/// 分段纪要要覆盖**整场会议**，比原来那版「十几行要点」长得多；
+/// 1200 太紧，模型写到一半被截断就什么都拿不到。宁可给宽一点。
+pub const SUMMARY_MAX_TOKENS: u32 = 2_500;
+
 /// 分段数量上限（够覆盖两三个小时的会议，又不至于让面板失控）
 const MAX_SECTIONS: usize = 40;
 /// 每段要点上限
@@ -346,7 +352,9 @@ pub fn apply_patch(
 pub fn parse_summary_patch(raw: &str) -> AppResult<SummaryPatch> {
     // 把模型原始输出带进错误信息：模型不听话是常态（尤其小参数模型），
     // 用户看到原文才能判断是提示词问题还是模型能力问题。
-    let json_text = extract_json_object(raw).ok_or_else(|| {
+    let json_text = extract_json_object(raw)
+        .or_else(|| repair_truncated_json(raw))
+        .ok_or_else(|| {
         AppError::ai(format!(
             "模型没有按要求返回 JSON 纪要。原始输出：{}",
             crate::util::truncate_chars(raw.trim(), 300)
@@ -357,8 +365,159 @@ pub fn parse_summary_patch(raw: &str) -> AppResult<SummaryPatch> {
         .map_err(|e| AppError::ai(format!("模型返回的 JSON 解析失败：{e}")))?;
 
     let value = unwrap_nested(value);
-    serde_json::from_value::<SummaryPatch>(value)
-        .map_err(|e| AppError::ai(format!("纪要字段与预期不符：{e}")))
+    Ok(patch_from_value(&value))
+}
+
+/* ==========================================================================
+ * 宽容解析
+ *
+ * 模型（尤其 2B 这种小模型）不会严格执行 JSON 模式：
+ *   - 该给字符串的地方给了数组：`"overview": ["第一句", "第二句"]`
+ *   - 该给数组的地方给了字符串：`"keyPoints": "- a\n- b"`
+ *   - 该给对象数组的地方给了字符串数组：`"sections": ["议题一：…"]`
+ *
+ * 以前直接用 serde 强类型反序列化，遇到类型不符就整份纪要报错，
+ * 用户看到的是「纪要字段与预期不符」而拿不到任何内容。
+ * 现在一律**尽力取值**：类型不对就转换，转不出来才跳过这一个字段，
+ * 绝不让某一个字段毁掉整份纪要。
+ * ========================================================================== */
+
+/// 按候选键名取一个「文本」值（字符串 / 数字 / 数组 / 对象里的 text）
+fn pick_text(v: &Value, keys: &[&str]) -> Option<String> {
+    let raw = keys.iter().find_map(|k| v.get(*k))?;
+    value_to_text(raw)
+}
+
+fn value_to_text(raw: &Value) -> Option<String> {
+    match raw {
+        Value::String(s) => {
+            let t = s.trim();
+            (!t.is_empty()).then(|| t.to_string())
+        }
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        // 数组 → 用中文顿号连起来（模型经常把一句话拆成几个元素）
+        Value::Array(items) => {
+            let parts: Vec<String> = items.iter().filter_map(value_to_text).collect();
+            (!parts.is_empty()).then(|| parts.join("；"))
+        }
+        // 对象 → 取常见的正文字段
+        Value::Object(_) => ["text", "value", "content", "summary", "title"]
+            .iter()
+            .find_map(|k| raw.get(*k))
+            .and_then(value_to_text),
+        Value::Null => None,
+    }
+}
+
+/// 按候选键名取一个「字符串列表」值
+fn pick_list(v: &Value, keys: &[&str]) -> Option<Vec<String>> {
+    let raw = keys.iter().find_map(|k| v.get(*k))?;
+    match raw {
+        Value::Array(items) => {
+            let out: Vec<String> = items.iter().filter_map(value_to_text).collect();
+            (!out.is_empty()).then_some(out)
+        }
+        // 字符串 → 按行/分号切开（模型偶尔把列表写成一整段）
+        Value::String(text) => {
+            let out: Vec<String> = text
+                .split(['\n', '；', ';', '、'])
+                .map(|x| x.trim().trim_start_matches(['-', '*', '•', ' ']).trim())
+                .filter(|x| !x.is_empty())
+                .map(str::to_string)
+                .collect();
+            (!out.is_empty()).then_some(out)
+        }
+        other => value_to_text(other).map(|t| vec![t]),
+    }
+}
+
+fn pick_sections(v: &Value) -> Option<Vec<SectionRaw>> {
+    let raw = ["sections", "outline", "blocks", "chapters"]
+        .iter()
+        .find_map(|k| v.get(*k))?;
+    let items = match raw {
+        Value::Array(items) => items.clone(),
+        // 单个对象也算一段
+        Value::Object(_) => vec![raw.clone()],
+        _ => return None,
+    };
+    let mut out = Vec::new();
+    for item in items {
+        match &item {
+            // 纯字符串：当成只有标题的一段
+            Value::String(text) => {
+                let t = text.trim();
+                if !t.is_empty() {
+                    out.push(SectionRaw {
+                        title: Some(t.to_string()),
+                        points: None,
+                        until_ms: None,
+                    });
+                }
+            }
+            Value::Object(_) => out.push(SectionRaw {
+                title: pick_text(&item, &["title", "heading", "name", "topic", "segment"]),
+                points: pick_list(&item, &["points", "items", "bullets", "content", "details"]),
+                until_ms: ["untilMs", "until_ms", "endMs", "at"]
+                    .iter()
+                    .find_map(|k| item.get(*k))
+                    .and_then(|x| x.as_i64()),
+            }),
+            _ => {}
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn pick_action_items(v: &Value) -> Option<Vec<ActionItemRaw>> {
+    let raw = ["actionItems", "action_items", "todos", "tasks", "actionItemsList"]
+        .iter()
+        .find_map(|k| v.get(*k))?;
+    let items = match raw {
+        Value::Array(items) => items.clone(),
+        _ => vec![raw.clone()],
+    };
+    let mut out = Vec::new();
+    for item in items {
+        match &item {
+            Value::String(text) => {
+                let t = text.trim();
+                if !t.is_empty() {
+                    out.push(ActionItemRaw::Text(t.to_string()));
+                }
+            }
+            Value::Object(_) => {
+                let text = pick_text(&item, &["text", "task", "item", "content", "title"]);
+                let owner = pick_text(&item, &["owner", "assignee", "who", "person"]);
+                let due = pick_text(&item, &["due", "deadline", "when", "date"]);
+                match text {
+                    Some(t) => out.push(ActionItemRaw::Full(ActionItem {
+                        text: t,
+                        owner: owner.unwrap_or_default(),
+                        due: due.unwrap_or_default(),
+                    })),
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// 从已解析的 JSON 里**尽力**取出各字段，类型不符就转换而不是报错
+fn patch_from_value(v: &Value) -> SummaryPatch {
+    SummaryPatch {
+        live: pick_text(v, &["live", "liveSummary", "live_summary", "recent"]),
+        overview: pick_text(v, &["overview", "abstract", "summaryOverview"]),
+        sections: pick_sections(v),
+        summary: pick_text(v, &["summary", "summaryMarkdown", "minutes", "notes"]),
+        key_points: pick_list(v, &["keyPoints", "key_points", "keypoints", "points", "highlights"]),
+        decisions: pick_list(v, &["decisions", "decisions_made", "conclusions"]),
+        action_items: pick_action_items(v),
+        topics: pick_list(v, &["topics", "topic", "current_topics"]),
+    }
 }
 
 /// 去掉 markdown 代码块、前后解释文字，返回第一个完整的 JSON 对象文本。
@@ -411,6 +570,102 @@ pub fn extract_json_object(raw: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// 输出被 max_tokens 截断时，尽量把 JSON 补成合法的。
+///
+/// 小模型常在写到一半时被截断，严格解析必然失败，整轮纪要就白跑了。
+/// 这里做无损的部分抢救：切掉尾部不完整的片段，再把没闭合的括号补上。
+fn repair_truncated_json(candidate: &str) -> Option<String> {
+    let start = candidate.find('{')?;
+    let body = &candidate[start..];
+    let bytes = body.as_bytes();
+
+    let mut stack: Vec<u8> = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    // 最后一个「字符串外部」的逗号位置：截断点最可能在这里之后
+    let mut last_comma: Option<usize> = None;
+    let mut string_open_at: Option<usize> = None;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        let c = b as char;
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+                string_open_at = None;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+                string_open_at = Some(i);
+            }
+            '{' | '[' => stack.push(b),
+            '}' | ']' => {
+                stack.pop();
+            }
+            ',' => last_comma = Some(i),
+            _ => {}
+        }
+    }
+
+    if stack.is_empty() && !in_string {
+        return Some(body.to_string());
+    }
+
+    // 截断点：优先切到最后一个完整逗号之后，否则切掉没写完的字符串
+    let cut = match (in_string, string_open_at, last_comma) {
+        (true, Some(open), Some(comma)) => comma.min(open),
+        (true, Some(open), None) => open,
+        _ => last_comma.map(|c| c + 1).unwrap_or(body.len()),
+    };
+
+    let mut out = body[..cut.min(body.len())].trim_end().to_string();
+    // 切在逗号之后会留下一个孤零零的逗号
+    while out.ends_with(',') || out.ends_with(':') {
+        out.pop();
+        out = out.trim_end().to_string();
+    }
+
+    // 重新计算需要补几个括号（基于被截断后的内容）
+    let mut stack2: Vec<char> = Vec::new();
+    let mut in_string2 = false;
+    let mut escaped2 = false;
+    for &b in out.as_bytes() {
+        let c = b as char;
+        if in_string2 {
+            if escaped2 {
+                escaped2 = false;
+            } else if c == '\\' {
+                escaped2 = true;
+            } else if c == '"' {
+                in_string2 = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string2 = true,
+            '{' => stack2.push('}'),
+            '[' => stack2.push(']'),
+            '}' | ']' => {
+                stack2.pop();
+            }
+            _ => {}
+        }
+    }
+    if in_string2 {
+        out.push('"');
+    }
+    while let Some(close) = stack2.pop() {
+        out.push(close);
+    }
+    Some(out)
 }
 
 fn strip_code_fence(s: &str) -> String {
@@ -649,6 +904,76 @@ mod tests {
         assert_eq!(st.live, "只有这个");
         assert!(st.key_points.is_empty());
         assert_eq!(st.revision, 0);
+    }
+
+    #[test]
+    fn wrong_types_never_kill_the_whole_summary() {
+        // 用户实际遇到的报错：「纪要字段与预期不符：invalid type: sequence, expected a string」。
+        // 小模型把 overview 写成数组、把 keyPoints 写成一整段字符串都是常态，
+        // 以前一个字段类型不对就整份纪要失败，用户什么都看不到。
+        let raw = r#"{
+          "overview": ["先过三季度复盘", "再定下季度目标"],
+          "keyPoints": "- 营收 +18%\n- 流失率上升 2pt",
+          "decisions": "确定 11/10 灰度",
+          "actionItems": ["出埋点方案", {"text": "确认预算", "owner": "张三", "due": "下周三"}],
+          "sections": [
+            {"title": "三季度复盘", "points": "营收 +18%；流失率上升 2pt"},
+            {"title": ["上线节奏", "版本计划"], "items": ["11/10 灰度", "11/24 全量"]}
+          ],
+          "topics": "增长, 留存"
+        }"#;
+        let patch = parse_summary_patch(raw).expect("类型不符也不该报错");
+        assert_eq!(
+            patch.overview.as_deref(),
+            Some("先过三季度复盘；再定下季度目标"),
+            "数组形式的 overview 应被连成一句话"
+        );
+        assert_eq!(
+            patch.key_points.as_deref(),
+            Some(&["营收 +18%".to_string(), "流失率上升 2pt".to_string()][..]),
+            "字符串形式的要点应被按行拆开"
+        );
+        assert_eq!(patch.decisions.as_deref(), Some(&["确定 11/10 灰度".to_string()][..]));
+        let items = patch.action_items.unwrap();
+        assert_eq!(items.len(), 2, "字符串与对象混着给也要都能取到");
+
+        let sections = patch.sections.unwrap();
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].title.as_deref(), Some("三季度复盘"));
+        assert_eq!(
+            sections[0].points.as_deref(),
+            Some(&["营收 +18%".to_string(), "流失率上升 2pt".to_string()][..]),
+            "分段要点是字符串时应被拆开"
+        );
+        assert_eq!(sections[1].title.as_deref(), Some("上线节奏；版本计划"));
+        // 逗号不切：一句话里本来就常有逗号，切了反而会把一条要点拆成两半。
+        // topics 拿到的是一整串也不影响使用。
+        assert_eq!(patch.topics.as_deref(), Some(&["增长, 留存".to_string()][..]));
+    }
+
+    #[test]
+    fn truncated_output_is_repaired_instead_of_thrown_away() {
+        // 用户实际遇到的：「模型输出被 max_tokens 截断且内容为空」。
+        // 只要还能抢救出已写完的部分，就不该整轮丢掉。
+        let truncated = r#"{"overview":"会议评审了冷链仓改造","sections":[{"title":"预算","points":["月台改造 230 万","工期六周"]},{"title":"布局","points":["分拣线改环形"#;
+        let patch = parse_summary_patch(truncated).expect("截断的输出应能抢救");
+        assert_eq!(patch.overview.as_deref(), Some("会议评审了冷链仓改造"));
+        let sections = patch.sections.unwrap();
+        assert!(!sections.is_empty(), "至少应救回第一段");
+        assert_eq!(sections[0].title.as_deref(), Some("预算"));
+
+        // 尾部切在没写完的字符串中间
+        let cut_mid_string = r#"{"overview":"冷链仓改造","keyPoints":["预算 230 万","工期六"#;
+        let patch = parse_summary_patch(cut_mid_string).expect("应能救回已完成的字段");
+        assert_eq!(patch.overview.as_deref(), Some("冷链仓改造"));
+    }
+
+    #[test]
+    fn total_garbage_still_reports_a_readable_error() {
+        let err = parse_summary_patch("模型今天不想干活").unwrap_err().to_string();
+        assert!(err.contains("没有按要求返回 JSON"), "错误信息应可读：{err}");
+        // 空对象不算错，只是没有内容
+        assert!(parse_summary_patch("{}").is_ok());
     }
 
     #[test]

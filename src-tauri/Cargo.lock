@@ -2241,7 +2241,7 @@ dependencies = [
 
 [[package]]
 name = "meeting-hear"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "chrono",

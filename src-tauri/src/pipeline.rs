@@ -1130,7 +1130,11 @@ pub async fn summarize_once(
         },
     );
 
-    match client.chat(&provider, &messages).await {
+    // 显式给足输出预算：分段纪要要覆盖整场会议，默认的 1200 容易被截断
+    match client
+        .chat_with_limit(&provider, &messages, Some(summarizer::SUMMARY_MAX_TOKENS))
+        .await
+    {
         Ok(outcome) => {
             let patch: SummaryPatch = match summarizer::parse_summary_patch(&outcome.content) {
                 Ok(p) => p,
