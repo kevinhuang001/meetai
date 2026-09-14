@@ -2,7 +2,7 @@
   "name": "meeting-hear",
   "private": true,
   "packageManager": "pnpm@11.24.0",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "description": "实时会议转写与 AI 纪要 — 本地 Whisper 流式识别 + 可配置 AI 总结",
   "scripts": {

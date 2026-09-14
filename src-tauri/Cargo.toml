@@ -1,6 +1,6 @@
 [package]
 name = "meeting-hear"
-version = "0.1.1"
+version = "0.2.0"
 description = "实时会议转写与 AI 纪要：本地 Whisper 流式识别 + 可配置 AI 实时总结"
 authors = ["MeetingHear"]
 edition = "2021"
