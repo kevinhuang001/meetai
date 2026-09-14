@@ -40,6 +40,32 @@ port_listening() { # $1=port
   fi
 }
 
+# 已在监听的 whisper-server 是否配了语言自动检测。
+# 它默认按英文识别，中文语音会被转成英文乱码、应用里却什么都不显示。
+whisper_lang_ok() {
+  local pid cmd
+  pid=$(pgrep -f "whisper-server.*--port[= ]*$WHISPER_PORT" 2>/dev/null | head -1)
+  [ -z "$pid" ] && pid=$(pgrep -x whisper-server 2>/dev/null | head -1)
+  [ -z "$pid" ] && return 2   # 找不到进程，无法判断
+  cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+  case "$cmd" in
+    *"--language auto"*|*"-l auto"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+warn_missing_language() {
+  c_warn "这个 whisper-server 没有带 --language auto"
+  cat <<'TIP'
+    它的默认语言是英文：中文语音会被按英文硬识别，结果是一段英文乱码，
+    在你看来就像「识别不出任何东西」。识别语言归服务端管，应用不参与。
+    修法（重启服务）：
+      ./scripts/dev-services.sh restart            # 推荐
+      # 或手动：先 kill 掉 whisper-server，再用 --language auto 重启：
+      #   ./build/bin/whisper-server -m models/ggml-base.bin --port 8090 --language auto
+TIP
+}
+
 wait_http() { # $1=url $2=秒数
   local url="$1" deadline=$(( $(date +%s) + ${2:-30} ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -51,7 +77,12 @@ wait_http() { # $1=url $2=秒数
 
 start_whisper() {
   if port_listening "$WHISPER_PORT"; then
-    c_ok "端口 $WHISPER_PORT 已在监听，复用现有 whisper 服务"
+    if whisper_lang_ok; then
+      c_ok "端口 $WHISPER_PORT 已在监听，复用现有 whisper 服务（已配 --language auto）"
+    else
+      c_warn "端口 $WHISPER_PORT 已在监听，复用现有 whisper 服务"
+      warn_missing_language
+    fi
     return 0
   fi
   if [ ! -x "$WHISPER_BIN" ]; then
@@ -78,7 +109,7 @@ TIP
     > "$RUN_DIR/whisper.log" 2>&1 &
   echo $! > "$RUN_DIR/whisper.pid"
   if wait_http "http://127.0.0.1:$WHISPER_PORT/" 40; then
-    c_ok "whisper 服务就绪：http://127.0.0.1:$WHISPER_PORT/inference"
+    c_ok "whisper 服务就绪：http://127.0.0.1:$WHISPER_PORT/inference（语言 $WHISPER_LANG）"
   else
     c_err "whisper 服务启动超时，日志：$RUN_DIR/whisper.log"
     return 1
@@ -93,9 +124,19 @@ start_ollama() {
       c_err "未安装 ollama，见 https://ollama.com/download"
       return 1
     fi
-    c_ok "启动 ollama serve（监听 $BIND_HOST:$OLLAMA_PORT）"
-    OLLAMA_HOST="$BIND_HOST:$OLLAMA_PORT" nohup ollama serve > "$RUN_DIR/ollama.log" 2>&1 &
-    echo $! > "$RUN_DIR/ollama.pid"
+    if ollama_is_systemd && [ "${MEETINGHEAR_OLLAMA_OWN:-0}" != "1" ]; then
+      # 交给 systemd，别自己再起一个；远程访问靠 override.conf 配 OLLAMA_HOST
+      c_ok "通过 systemd 启动 ollama（监听地址由 /etc/systemd/system/ollama.service.d/override.conf 决定）"
+      if ! systemctl start ollama 2>/dev/null; then
+        c_warn "systemctl start ollama 失败（可能需要 sudo），尝试直接启动"
+        OLLAMA_HOST="$BIND_HOST:$OLLAMA_PORT" nohup ollama serve > "$RUN_DIR/ollama.log" 2>&1 &
+        echo $! > "$RUN_DIR/ollama.pid"
+      fi
+    else
+      c_ok "启动 ollama serve（监听 $BIND_HOST:$OLLAMA_PORT）"
+      OLLAMA_HOST="$BIND_HOST:$OLLAMA_PORT" nohup ollama serve > "$RUN_DIR/ollama.log" 2>&1 &
+      echo $! > "$RUN_DIR/ollama.pid"
+    fi
     wait_http "http://127.0.0.1:$OLLAMA_PORT/api/tags" 40 || c_warn "ollama 启动较慢，继续检查模型"
   fi
 
@@ -118,25 +159,82 @@ cmd_start() {
 }
 
 cmd_stop() {
-  echo "== 停止由本脚本启动的服务 =="
+  echo "== 停止 whisper / ollama =="
+  local stopped_ports=""
   for name in whisper ollama; do
     local f="$RUN_DIR/$name.pid"
     if [ -f "$f" ]; then
       local pid; pid=$(cat "$f")
       if kill -0 "$pid" 2>/dev/null; then
         kill "$pid" && c_ok "已停止 $name（pid $pid）"
+        stopped_ports="$stopped_ports $(port_of "$name")"
       fi
       rm -f "$f"
+      continue
+    fi
+    # 没记 pid：如果占用端口的正是同名进程，一并收掉。
+    # 否则 restart 会「复用」一个配置不对的旧服务，用户以为改了其实没改。
+    local port pid
+    case "$name" in
+      whisper) port="$WHISPER_PORT" ;;
+      ollama)
+        port="$OLLAMA_PORT"
+        if ollama_is_systemd && port_listening "$port"; then
+          if systemctl stop ollama 2>/dev/null; then
+            c_ok "已停止 systemd 的 ollama"
+            stopped_ports="$stopped_ports $port"
+          else
+            c_warn "ollama 由 systemd 管理，停止需要 sudo：sudo systemctl stop ollama"
+          fi
+          continue
+        fi
+        ;;
+    esac
+    pid=$(pgrep -x "${name}-server" 2>/dev/null | head -1)
+    [ -z "$pid" ] && [ "$name" = "ollama" ] && pid=$(pgrep -x ollama 2>/dev/null | head -1)
+    if [ -n "$pid" ] && port_listening "$port"; then
+      kill "$pid" && c_ok "已停止占用 $port 的 $name（pid $pid，非本脚本启动）"
+      stopped_ports="$stopped_ports $port"
     else
       c_warn "$name 不是由本脚本启动的，未处理"
     fi
   done
+  # 等「刚刚被停掉的」端口真正释放再返回：否则紧接着 start 会「复用」一个正在
+  # 退出的旧进程，两个实例同时绑定同一端口，请求会被劈成两半，表现为推理卡住不动。
+  local waited=0 p
+  for p in $stopped_ports; do
+    while [ "$waited" -lt 15 ] && port_listening "$p"; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+    port_listening "$p" && c_warn "端口 $p 还没释放干净，稍等一下再 start"
+  done
+}
+
+# ollama 是否由 systemd 管理（官方安装脚本默认会装成服务）。
+# 这种情况必须走 systemctl：直接 kill 掉它会被 systemd 自动拉起来，
+# 和我们自己起的 ollama serve 抢同一个端口，两边都不可用。
+ollama_is_systemd() {
+  command -v systemctl >/dev/null 2>&1 &&
+    systemctl list-unit-files ollama.service >/dev/null 2>&1 &&
+    systemctl cat ollama.service >/dev/null 2>&1
+}
+
+# 服务名 → 端口
+port_of() {
+  case "$1" in
+    whisper) echo "$WHISPER_PORT" ;;
+    ollama)  echo "$OLLAMA_PORT" ;;
+  esac
 }
 
 cmd_status() {
   echo "== 服务状态 =="
   if port_listening "$WHISPER_PORT"; then
     c_ok "whisper  : http://127.0.0.1:$WHISPER_PORT/inference"
+    if ! whisper_lang_ok; then
+      c_warn "whisper  : 未配置 --language auto，中文会被按英文识别（见下方说明）"
+    fi
   else
     c_err "whisper  : 未运行（端口 $WHISPER_PORT）"
   fi
