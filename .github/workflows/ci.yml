@@ -236,7 +236,13 @@ jobs:
         run: |
           mkdir -p dist-artifacts
           cp src-tauri/target/release/bundle/dmg/*.dmg dist-artifacts/ 2>/dev/null || true
-          cp -R src-tauri/target/release/bundle/macos/*.app dist-artifacts/ 2>/dev/null || true
+          # Release 只能挂文件、不能挂目录：.app 必须打成 zip，
+          # 否则它内部的二进制 / Info.plist / 图标会被当成独立资源散落在 Release 里
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          OUT="$GITHUB_WORKSPACE/dist-artifacts"
+          if [ -d "src-tauri/target/release/bundle/macos/MeetingHear.app" ]; then
+            ( cd src-tauri/target/release/bundle/macos && zip -qry "$OUT/MeetingHear_${VERSION}_aarch64.app.zip" MeetingHear.app )
+          fi
           ls -la dist-artifacts/
 
       - name: 上传安装包
@@ -259,9 +265,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: 下载全部产物
+      # 只取安装包产物。不加 pattern 会把 ui-screenshots 也一起下载，
+      # 结果截图会散落在 Release 的资源列表里。
+      - name: 下载安装包产物
         uses: actions/download-artifact@v4
         with:
+          pattern: MeetingHear-*
           path: artifacts
 
       - name: 发布
