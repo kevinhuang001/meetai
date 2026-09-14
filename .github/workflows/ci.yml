@@ -54,21 +54,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # 关键：cargo 依赖**源码**（registry/git）单独缓存，key 里不带 profile/job 名，
-      # 于是 test 与 build 两个 job 能互相复用，不必各下一遍（这里通常有 600MB+）
-      - name: 缓存 cargo 依赖源码（跨 job 共享）
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/registry/src
-            ~/.cargo/git/db
-          key: cargo-deps-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: |
-            cargo-deps-${{ runner.os }}-
-
-      # 编译产物按 profile 分开缓存（dev 供测试、release 供打包），互不覆盖
+      # rust-cache 的缓存里已经包含 ~/.cargo/registry 与 ~/.cargo/git，
+      # 所以**不要**再单独加一层 registry 缓存 —— 那样每个 job 会白恢复一次几百 MB。
+      # 这里只需要按 profile 分开缓存编译产物（dev 供测试、release 供打包）。
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
@@ -157,10 +145,9 @@ jobs:
   #
   #    注意：这个 job 会重新装一遍依赖 —— 这是 GitHub Actions 的固有行为：
   #    每个 job 都在全新虚拟机上跑，磁盘不共享，**只有 cache 会跨 job 复用**。
-  #    所以这里每一步都刻意用了与 test job 相同的缓存 key
-  #    （apt 包 / cargo 依赖源码 / pnpm store），命中后几乎不再有下载。
-  #    真正无法复用、必须重来的只有「release profile 的编译」这一件事
-  #    （它和测试用的 dev profile 是两份不同的产物）。
+  #    因此这里每一步都配了缓存（apt 包 / rust-cache 含 registry / pnpm store），
+  #    命中后基本没有下载，只剩「release profile 的编译」必须重来
+  #    —— 它和测试用的 dev profile 是两份不同的产物，这份时间省不掉。
   #
   #    PR 上跳过打包步骤以省时间，编译与测试仍然照跑。
   # ==========================================================================
@@ -200,19 +187,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # 与 test job 同一个 key：crate 源码下载直接复用，不再重下一遍
-      - name: 缓存 cargo 依赖源码（跨 job 共享）
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/registry/src
-            ~/.cargo/git/db
-          key: cargo-deps-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: |
-            cargo-deps-${{ runner.os }}-
-
+      # 与 test job 相同：registry 由 rust-cache 一并缓存（本 job 上一次运行的缓存里就有），
+      # 真正需要重新做的只有 release profile 的编译本身
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
