@@ -48,8 +48,12 @@ hound = "3.5"
 wasapi = "0.24"
 
 [profile.release]
-codegen-units = 1
-lto = true
+# 打包速度与运行性能的折中：
+# 曾经用 codegen-units = 1 + fat LTO，CI 上光打包就要多花好几分钟，
+# 而本项目已经没有重量级 Rust 计算（识别在服务端），thin LTO + 16 个
+# codegen unit 能省下大量编译时间，产物体积与性能几乎无差别。
+codegen-units = 16
+lto = "thin"
 opt-level = 3
 panic = "abort"
 strip = true

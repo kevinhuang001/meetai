@@ -15,13 +15,16 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Linux 测试与打包都要用的系统依赖，集中定义避免两处不一致
+  LINUX_APT_PACKAGES: >-
+    libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+    libasound2-dev libxdo-dev patchelf
 
 jobs:
   # ==========================================================================
   # 1. 跨平台编译 + 单元测试 + 契约测试
-  #    这一步是「三平台都能编译」的主要保障：
-  #    Windows 会真正编译 wasapi 内录、macOS 会编译 CoreAudio 路径，
-  #    平台专属代码的拼写/API 错误在这里就会暴露。
+  #    三平台矩阵：Windows 会真正编译 wasapi 内录、macOS 会编译 CoreAudio 路径，
+  #    平台专属代码的拼写/API 错误只有在这里才暴露得出来。
   # ==========================================================================
   test:
     name: 测试 · ${{ matrix.os }}
@@ -33,17 +36,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 Linux 系统依赖
+      # apt 包也缓存：系统依赖 100MB+，每个 job 重装要 1 分钟左右
+      - name: 安装 Linux 系统依赖（带缓存）
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libasound2-dev \
-            libxdo-dev \
-            patchelf
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: ${{ env.LINUX_APT_PACKAGES }}
+          version: 1.0
 
       # 版本由 package.json 的 packageManager 决定，避免本地与 CI 不一致
       - uses: pnpm/action-setup@v4
@@ -55,12 +54,27 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # 缓存 ~/.cargo 与 target/：命中后二次构建从 5~8 分钟降到 1 分钟内
+      # 关键：cargo 依赖**源码**（registry/git）单独缓存，key 里不带 profile/job 名，
+      # 于是 test 与 build 两个 job 能互相复用，不必各下一遍（这里通常有 600MB+）
+      - name: 缓存 cargo 依赖源码（跨 job 共享）
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git/db
+          key: cargo-deps-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-deps-${{ runner.os }}-
+
+      # 编译产物按 profile 分开缓存（dev 供测试、release 供打包），互不覆盖
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          # 区分不同平台的缓存，避免互相覆盖
           key: ${{ matrix.os }}-test
+          # 默认失败时不保存缓存，但编译失败恰恰最需要缓存（重试能快很多）
+          cache-on-failure: true
 
       - name: 安装前端依赖
         run: pnpm install --frozen-lockfile
@@ -72,7 +86,7 @@ jobs:
         run: pnpm build
 
       # 用 bash 跑并落盘日志：失败时把关键行转成 GitHub annotation，
-      # 这样即使没有仓库 admin 权限（无法下载 job 日志）也能从 API 读到失败原因。
+      # 这样即使没有仓库 admin 权限（无法下载 job 日志）也能从 API 读到失败原因
       - name: Rust 单元测试
         shell: bash
         run: |
@@ -99,7 +113,7 @@ jobs:
         run: cargo build --manifest-path src-tauri/Cargo.toml --all-targets
 
   # ==========================================================================
-  # 2. 前端 UI 冒烟测试（Playwright，仅 Linux）
+  # 2. 前端 UI 冒烟测试（只依赖 Node，不碰 Rust，所以单独跑得很快）
   # ==========================================================================
   ui-smoke:
     name: 界面冒烟测试
@@ -107,7 +121,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 版本由 package.json 的 packageManager 决定，避免本地与 CI 不一致
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
@@ -141,6 +154,15 @@ jobs:
 
   # ==========================================================================
   # 3. 三平台打包
+  #
+  #    注意：这个 job 会重新装一遍依赖 —— 这是 GitHub Actions 的固有行为：
+  #    每个 job 都在全新虚拟机上跑，磁盘不共享，**只有 cache 会跨 job 复用**。
+  #    所以这里每一步都刻意用了与 test job 相同的缓存 key
+  #    （apt 包 / cargo 依赖源码 / pnpm store），命中后几乎不再有下载。
+  #    真正无法复用、必须重来的只有「release profile 的编译」这一件事
+  #    （它和测试用的 dev profile 是两份不同的产物）。
+  #
+  #    PR 上跳过打包步骤以省时间，编译与测试仍然照跑。
   # ==========================================================================
   build:
     name: 打包 · ${{ matrix.name }}
@@ -162,19 +184,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 Linux 系统依赖
+      - name: 安装 Linux 系统依赖（带缓存，直接命中 test job 建立的缓存）
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libasound2-dev \
-            libxdo-dev \
-            patchelf
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: ${{ env.LINUX_APT_PACKAGES }}
+          version: 1.0
 
-      # 版本由 package.json 的 packageManager 决定，避免本地与 CI 不一致
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
@@ -184,42 +200,53 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # 打包用的是 release profile，和 test job 的 dev profile 是不同缓存，
-      # 所以这里单独一份 key。
+      # 与 test job 同一个 key：crate 源码下载直接复用，不再重下一遍
+      - name: 缓存 cargo 依赖源码（跨 job 共享）
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git/db
+          key: cargo-deps-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-deps-${{ runner.os }}-
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
           key: ${{ matrix.os }}-release
+          cache-on-failure: true
 
       - name: 安装前端依赖
         run: pnpm install --frozen-lockfile
 
       # 显式指定产物类型：默认的 "all" 在 Linux 上还会尝试 rpm，
-      # 而 GitHub runner 没有 rpmbuild，会直接失败。
+      # 而 GitHub runner 没有 rpmbuild，会直接失败
       - name: 打包（Linux）
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
         run: pnpm tauri build --bundles deb,appimage
 
       - name: 打包（Windows）
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
         run: pnpm tauri build --bundles msi,nsis
 
       - name: 打包（macOS）
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: pnpm tauri build --bundles dmg,app
 
       - name: 收集产物（Linux）
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
         shell: bash
         run: |
           mkdir -p dist-artifacts
           cp src-tauri/target/release/bundle/deb/*.deb dist-artifacts/ 2>/dev/null || true
-          cp src-tauri/target/release/bundle/rpm/*.rpm dist-artifacts/ 2>/dev/null || true
           cp src-tauri/target/release/bundle/appimage/*.AppImage dist-artifacts/ 2>/dev/null || true
           ls -la dist-artifacts/
 
       - name: 收集产物（Windows）
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist-artifacts | Out-Null
@@ -228,7 +255,7 @@ jobs:
           Get-ChildItem dist-artifacts
 
       - name: 收集产物（macOS）
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
         shell: bash
         run: |
           mkdir -p dist-artifacts
@@ -237,6 +264,7 @@ jobs:
           ls -la dist-artifacts/
 
       - name: 上传安装包
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: MeetingHear-${{ matrix.artifact }}
