@@ -117,7 +117,7 @@ export function StepAi({ draft, set }: StepProps) {
           placeholder="sk-…"
         />
       </Field>
-      <Field label="模型名" hint="例如 deepseek-chat / gpt-4o-mini / qwen2.5:7b">
+      <Field label="模型名" hint="例如 deepseek-chat / gpt-4o-mini / qwen3.5:2b">
         <TextInput
           value={provider?.model ?? ""}
           onChange={(v) => patchProvider({ model: v })}
@@ -131,10 +131,10 @@ export function StepAi({ draft, set }: StepProps) {
         <strong>不想花钱 / 不想联网：用本机 Ollama</strong>
         <span className="small">
           装好 Ollama 并拉一个模型后，Base URL 填 <code className="mono">http://localhost:11434/v1</code>，
-          模型名填你已经 pull 下来的那个（例如 <code className="mono">qwen2.5:7b</code>），API Key 留空。
+          模型名填你已经 pull 下来的那个（例如 <code className="mono">qwen3.5:2b</code>），API Key 留空。
         </span>
         <div className="cmd-row">
-          <code className="notice-code grow">ollama pull qwen2.5:7b</code>
+          <code className="notice-code grow">ollama pull qwen3.5:2b</code>
         </div>
         <LinkButtons links={[OLLAMA_PAGE]} />
       </div>

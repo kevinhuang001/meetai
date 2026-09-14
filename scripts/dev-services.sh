@@ -23,7 +23,7 @@ OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 # 默认监听 0.0.0.0，方便从别的机器（例如 Mac）连过来测试；
 # 只想本机用就设 BIND_HOST=127.0.0.1
 BIND_HOST="${BIND_HOST:-0.0.0.0}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:1.5b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3.5:2b}"
 
 RUN_DIR="${TMPDIR:-/tmp}/meeting-hear-services"
 mkdir -p "$RUN_DIR"

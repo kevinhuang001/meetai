@@ -1088,6 +1088,14 @@ pub async fn summarize_once(
             prompts::SummaryMode::parse(&settings.summary_mode),
             &s.title,
             &s.summary.overview,
+            &s.summary
+                .sections
+                .iter()
+                .map(|x| prompts::SectionLine {
+                    title: x.title.clone(),
+                    points: x.points.clone(),
+                })
+                .collect::<Vec<_>>(),
             &s.summary.summary,
             &s.summary.key_points,
             &s.summary.decisions,

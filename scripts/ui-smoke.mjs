@@ -569,17 +569,17 @@ async function main() {
     const partialSeen = await page.locator('[data-testid="partial-row"]').count();
     check("c2. 存在「正在说话」的活动行或已定稿行", partialSeen > 0 || counted > 0, `partial-row=${partialSeen}`);
 
-    // c. 「刚刚说到」AI 纪要文本非空
+    // c. 纪要展示的是**全部分段内容**（不是只有最近一段）
     let live = "";
     try {
       live = await waitFor(
         async () => {
-          const el = page.locator('[data-testid="summary-live"]');
+          const el = page.locator('[data-testid="summary-sections"]');
           if ((await el.count()) === 0) return "";
           const t = (await el.innerText()).trim();
-          return t && !t.startsWith("还没有可以总结") ? t : "";
+          return t ? t : "";
         },
-        { timeout: 25000, interval: 500, label: "等待 AI 实时纪要" },
+        { timeout: 25000, interval: 500, label: "等待分段纪要" },
       );
     } catch {
       live = "";
@@ -607,14 +607,23 @@ async function main() {
     const summaryPanel = await waitFor(
       async () => {
         const t = await page.locator('[data-testid="summary-panel"]').innerText().catch(() => "");
-        return /会议总览/.test(t) && /纪要要点/.test(t) && /待办事项/.test(t) ? t : false;
+        return /会议总览/.test(t) && /待办事项/.test(t) ? t : false;
       },
-      { timeout: 40000, interval: 500, label: "等待纪要三块齐全" },
+      { timeout: 40000, interval: 500, label: "等待纪要内容齐全" },
     ).catch(() => "");
     check(
-      "c5. 纪要面板渲染总览 / 纪要要点 / 待办三块（有内容才渲染）",
+      "c5. 纪要面板渲染总览 / 分段纪要 / 待办（有内容才渲染）",
       Boolean(summaryPanel),
       String(summaryPanel).replace(/\s+/g, " ").slice(0, 80),
+    );
+
+    // 纪要要展示**从会议开始到现在的全部内容**，按议题分段，而不是只有「最近一段」
+    const sectionCount = await page.locator('[data-testid="summary-sections"] .sum-section').count();
+    check("c5e. 纪要按议题分段，且覆盖所有已讲内容（≥2 段）", sectionCount >= 2, `${sectionCount} 段`);
+    check(
+      "c5d. 不再只有「最近一段」这一块",
+      !/最近一段/.test(String(summaryPanel)),
+      String(summaryPanel).replace(/\s+/g, " ").slice(0, 60),
     );
     // 精简的核心诉求：空的区块不再渲染，也不出现「暂无」占位文字
     check(
@@ -1012,12 +1021,14 @@ async function main() {
     await waitFor(() => page.locator('[data-testid="detail-title"]').isVisible(), { timeout: 8000, label: "等待会话详情" });
     const sidebarDetailTitle = await page.locator('[data-testid="detail-title"]').innerText();
     check("l5. 点击历史条目在主区域打开会话详情", /改名验证/.test(sidebarDetailTitle), sidebarDetailTitle);
-    await page.locator('[data-testid="detail-back"]').click();
-    const backHome = await waitFor(
-      () => page.locator('[data-testid="start-recording"]').isVisible().catch(() => false),
-      { timeout: 8000, interval: 200, label: "等待返回当前会议" },
-    ).catch(() => false);
-    check("l6. 详情页「返回当前会议」回到主界面", backHome);
+    // 详情页顶部的「返回当前会议」按钮已删除；回录制视图改走左侧顶部按钮
+    const backGone = await page.locator('[data-testid="detail-back"]').count();
+    const sidebarHome = await page.locator('[data-testid="sidebar-new-meeting"]').count();
+    check(
+      "l6. 详情页顶部返回按钮已删除，改由左侧按钮回录制视图",
+      backGone === 0 && sidebarHome === 1,
+      `顶部返回=${backGone}，左侧按钮=${sidebarHome}`,
+    );
 
     /* ---------------------------------------------------------- 会话详情 */
     await page.locator('[data-testid="goto-detail"]').click();
@@ -1156,8 +1167,8 @@ async function main() {
     await sleep(300);
 
     /* ------------- 未配置识别服务时，开始录音要给出引导而不是静默失败 ------------- */
-    // 从会话详情点「返回当前会议」回到录制视图
-    await page.locator('[data-testid="detail-back"]').click();
+    // 从会话详情点左侧「当前会议」回到录制视图（顶部返回按钮已删除）
+    await page.locator('[data-testid="sidebar-new-meeting"]').click();
     await waitFor(() => page.locator('[data-testid="start-recording"]').isVisible(), {
       timeout: 8000,
       label: "等待回到录制视图",

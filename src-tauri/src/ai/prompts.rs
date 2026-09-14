@@ -13,6 +13,13 @@
 use crate::ai::client::ChatMessage;
 use crate::util::{format_clock, truncate_chars};
 
+/// 传给提示词的已有分段（避免提示词层依赖业务类型）
+#[derive(Debug, Clone)]
+pub struct SectionLine {
+    pub title: String,
+    pub points: Vec<String>,
+}
+
 /// 纪要模式：同一份 JSON 结构，两种场景下字段含义不同。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SummaryMode {
@@ -54,8 +61,8 @@ impl SummaryMode {
     /// 「已有纪要」在 user 消息里的字段名，两种模式用词不同
     fn labels(&self) -> (&'static str, &'static str, &'static str, &'static str, &'static str) {
         match self {
-            SummaryMode::Meeting => ("会议总览", "讨论纪要", "关键结论", "已达成的决定", "待办事项"),
-            SummaryMode::Lecture => ("内容脉络", "知识笔记", "核心概念", "讲者强调的结论", "课后要做的事"),
+            SummaryMode::Meeting => ("会议总览", "已分段纪要", "关键结论", "已达成的决定", "待办事项"),
+            SummaryMode::Lecture => ("内容脉络", "已分模块笔记", "核心概念", "讲者强调的结论", "课后要做的事"),
         }
     }
 }
@@ -65,7 +72,7 @@ impl SummaryMode {
 const SUMMARY_SCHEMA_LECTURE: &str = r#"{
   "live": "字符串。最近这一段在讲什么，1~2 句话，要具体到术语与结论；没有新内容则给空字符串",
   "overview": "字符串。这场讲座到目前为止的 2~4 句脉络总览",
-  "summary": "字符串。markdown 无序列表形式的知识笔记，每行以 \"- \" 开头，按知识模块聚类，最多 12 行",
+  "sections": [{"title": "知识模块标题", "points": ["该模块讲到的知识点"], "untilMs": 0}],
   "keyPoints": ["字符串数组。核心概念、定义、定理、公式、重要数据"],
   "decisions": ["字符串数组。讲者明确强调的结论、易错点、重要提醒"],
   "actionItems": [{"text": "课后需要复习、练习或查阅的点", "owner": "留空字符串", "due": "留空字符串"}],
@@ -76,7 +83,7 @@ const SUMMARY_SCHEMA_LECTURE: &str = r#"{
 const SUMMARY_SCHEMA: &str = r#"{
   "live": "字符串。最近几句在说什么，1~2 句话，要具体到人名、数字、结论；没有新内容则给空字符串",
   "overview": "字符串。整场会议到目前为止的 2~4 句总览",
-  "summary": "字符串。markdown 无序列表形式的完整纪要，每行以 \"- \" 开头，按主题聚类，最多 12 行",
+  "sections": [{"title": "分段标题", "points": ["该段的要点"], "untilMs": 0}],
   "keyPoints": ["字符串数组。关键结论、重要事实、关键数字"],
   "decisions": ["字符串数组。已经明确达成的决定"],
   "actionItems": [{"text": "待办事项", "owner": "负责人，不知道就填空字符串", "due": "截止时间，不知道就填空字符串"}],
@@ -94,6 +101,8 @@ pub const SUMMARY_SYSTEM_MEETING: &str = r#"你是一名资深会议秘书，负
 你的任务是基于已有纪要做**增量更新**，输出更新后的完整纪要。
 
 必须严格遵守：
+0. **绝对不要照抄解释文字或任何示例**。输出里的每一个词都必须来自用户消息里的转写内容。
+   本提示词只用来说明规则，里面出现的任何具体说法都不是给你的素材。
 1. 只使用转写内容里出现过的信息。绝对不要编造、不要脑补、不要补充常识性背景。信息不足时留空字符串或空数组。
 2. 保留已有纪要中仍然有效的信息；新增内容与已有内容重复时合并，不要重复列出。
 3. 可以修正明显的语音识别错误（同音字、专有名词、人名），但不得改变原意，也不要凭空替换整句。
@@ -107,22 +116,28 @@ pub const SUMMARY_SYSTEM_MEETING: &str = r#"你是一名资深会议秘书，负
 10. **绝对不要重复**：同一个要点只能出现一次。如果信息很少，就少写几条，
     宁可比要求的更短，也不要靠复读凑长度。整个 JSON 控制在 800 字以内。
 
+分段规则（sections，最重要）：
+- 纪要要呈现的是**从会议开始到现在的全部内容**，不是只有最近一段。
+- 按议题/阶段把内容切成若干段，每段一个短标题（4~12 字，如「三季度复盘」「上线节奏」）。
+- **每次都必须输出完整的分段列表**：包含之前已有的所有段 + 这次新增或变化的内容。
+  「已有纪要」里的段要原样带上（可以改标题用词，但不能丢内容）。
+- 内容变多时**重新分段**：同一议题的内容要合进同一段；如果一段里混进了明显不同的话题，
+  就把它拆成两段。分段的粒度以「打开纪要的人能快速找到他关心的那块」为准。
+- 一段要点 2~6 条，写结论和关键数字，不要写流水账。
+- 已结束的旧话题保持简短，把要点留给当前正在讨论的内容。
+- untilMs 填这一段最后一条内容对应的会议时间（毫秒）；不确定就填 0。
+
 字段含义（会议场景）：
 - live：最近这一段（已过去的几十秒到几分钟）在说什么，1~2 句，要具体到人名、数字、结论
 - overview：整场会议到目前为止的 2~4 句总览
-- summary：markdown 无序列表，每行以 "- " 开头，按议题聚类，最多 12 行
+- sections：**最重要**，见下面「分段规则」。整份笔记的内容都在这里。。整份纪要的内容都在这里。
 - keyPoints：关键结论、重要事实、关键数字
 - decisions：已经明确达成的决定（没达成就是空数组）
 - actionItems：待办，尽量带负责人与截止时间；不确定就留空字符串
 - topics：当前讨论的主题关键词，最多 6 个
 
-输入输出示例（仅示意格式）：
-已有纪要：（无）
-新增转写：
-[00:00:01] 今天过三件事，增长复盘、下季度目标、上线节奏。
-[00:00:06] 三季度营收环比增长百分之十八。
-正确输出：
-{"live":"开始同步三季度增长情况，营收环比增长18%","overview":"会议围绕三季度复盘、下季度目标与新版本上线节奏展开。","summary":"- 三季度营收环比 +18%\n- 会议将覆盖增长复盘、下季度目标、上线节奏三项议题","keyPoints":["三季度营收环比增长18%"],"decisions":[],"actionItems":[],"topics":["三季度复盘","下季度目标","上线节奏"]}"#;
+**不要照抄任何示例文本**：本提示词里出现的任何举例内容都与你的输入无关。
+你只能依据用户消息里给出的转写内容来写，一个词都不许来自提示词本身。"#;
 
 /// 讲座 / 课程模式：抓知识点、概念脉络、复习项
 pub const SUMMARY_SYSTEM_LECTURE: &str = r#"你是一名专业的学习笔记整理者，负责在一场讲座 / 课程进行中**滚动维护**一份知识笔记。
@@ -135,6 +150,8 @@ pub const SUMMARY_SYSTEM_LECTURE: &str = r#"你是一名专业的学习笔记整
 你的任务是基于已有笔记做**增量更新**，输出更新后的完整笔记。
 
 必须严格遵守：
+0. **绝对不要照抄解释文字或任何示例**。输出里的每一个词都必须来自用户消息里的转写内容。
+   本提示词只用来说明规则，里面出现的任何具体说法都不是给你的素材。
 1. 只使用转写内容里出现过的信息。绝对不要补充讲者没讲过的知识、不要脑补教材内容、不要自行推导结论。
 2. 保留已有笔记中仍然有效的内容；重复讲的合并，不要重复列出。
 3. 修正明显的语音识别错误（同音字、专业术语、人名、数字），但不得改变原意。
@@ -148,6 +165,15 @@ pub const SUMMARY_SYSTEM_LECTURE: &str = r#"你是一名专业的学习笔记整
 10. **绝对不要重复**：同一个知识点只出现一次。信息少就少写，不要靠复读凑长度。
     整个 JSON 控制在 800 字以内。
 
+分段规则（sections，最重要）：
+- 笔记要呈现的是**从讲座开始到现在的全部内容**，不是只有最近一段。
+- 按**知识模块**切段，每段一个短标题（4~12 字，如「注意力机制」「梯度消失」）。
+- **每次都必须输出完整的分段列表**：包含之前已有的所有段 + 这次新增的知识点。
+  「已有内容」里的段要原样带上，不能丢。
+- 讲到新模块时新增一段；同一模块的补充内容追加到对应段里；模块划分不合理时重新分段。
+- 一段 2~6 条，写知识点本身（定义、结论、公式、数字），不要写「讲者说了什么」这类元描述。
+- untilMs 填这一段最后一条内容对应的讲解时间（毫秒）；不确定就填 0。
+
 字段含义（讲座场景，注意与会议不同）：
 - live：最近这一段（已过去的几十秒到几分钟）在讲什么，1~2 句，要具体到术语与结论
 - overview：这场讲座到目前为止讲了什么、脉络是什么，2~4 句
@@ -157,13 +183,8 @@ pub const SUMMARY_SYSTEM_LECTURE: &str = r#"你是一名专业的学习笔记整
 - actionItems：课后需要复习、练习或查阅的点（没有就是空数组）
 - topics：当前讲解的知识模块关键词，最多 6 个
 
-输入输出示例（仅示意格式）：
-已有笔记：（无）
-新增转写：
-[00:00:03] 今天我们讲注意力机制，先说它解决什么问题。
-[00:00:09] 循环网络在长序列上会梯度消失，注意力可以让任意两个位置直接相连。
-正确输出：
-{"live":"开始讲注意力机制，先讲它要解决的问题","overview":"本次讲座围绕注意力机制展开，从其动机讲起。","summary":"- 注意力机制的动机\n- 循环网络在长序列上存在梯度消失问题\n- 注意力让任意两个位置可以直接建立联系","keyPoints":["循环网络在长序列上会梯度消失","注意力机制允许任意两个位置直接相连"],"decisions":["注意力机制的核心价值是解决长距离依赖"],"actionItems":[],"topics":["注意力机制","长序列建模","梯度消失"]}"#;
+**不要照抄任何示例文本**：本提示词里出现的任何举例内容都与你的输入无关。
+你只能依据用户消息里给出的内容来写，一个词都不许来自提示词本身。"#;
 
 pub const SUMMARY_SCHEMA_HINT: &str = SUMMARY_SCHEMA;
 
@@ -195,6 +216,7 @@ pub fn build_incremental_messages(
     mode: SummaryMode,
     title: &str,
     overview: &str,
+    sections: &[SectionLine],
     summary: &str,
     key_points: &[String],
     decisions: &[String],
@@ -211,6 +233,7 @@ pub fn build_incremental_messages(
     // 小参数模型会把这套骨架当成输出模板原样抄回来
     // （实测 qwen2.5:1.5b 会输出一串"总览：总览：总览：…"）。
     let is_empty = overview.trim().is_empty()
+        && sections.is_empty()
         && summary.trim().is_empty()
         && key_points.is_empty()
         && decisions.is_empty()
@@ -218,13 +241,31 @@ pub fn build_incremental_messages(
         && topics.is_empty();
 
     let (l_overview, l_summary, l_points, l_decisions, l_actions) = mode.labels();
+    let sections_text = if sections.is_empty() {
+        "（暂无）".to_string()
+    } else {
+        sections
+            .iter()
+            .map(|s| {
+                format!(
+                    "■ {}\n{}",
+                    s.title,
+                    s.points
+                        .iter()
+                        .map(|p| format!("  - {p}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     let prev_summary = if is_empty {
         "（暂无已有内容，这是第一版，请从零生成）".to_string()
     } else {
         format!(
-            "<已有内容>\n{l_overview}：{}\n{l_summary}：\n{}\n{l_points}：{}\n{l_decisions}：{}\n{l_actions}：{}\n当前主题：{}\n</已有内容>",
+            "<已有内容>\n{l_overview}：{}\n{l_summary}（必须完整带到输出里）：\n{sections_text}\n{l_points}：{}\n{l_decisions}：{}\n{l_actions}：{}\n当前主题：{}\n</已有内容>",
             if overview.trim().is_empty() { "（暂无）" } else { overview.trim() },
-            if summary.trim().is_empty() { "（暂无）" } else { summary.trim() },
             join_or_empty(key_points),
             join_or_empty(decisions),
             if action_items.trim().is_empty() { "（暂无）" } else { action_items.trim() },
@@ -294,6 +335,7 @@ mod tests {
             SummaryMode::Meeting,
             "产品周会",
             "",
+            &[],
             "",
             &[],
             &[],
@@ -347,7 +389,11 @@ mod tests {
             SummaryMode::Lecture,
             "机器学习导论",
             "已讲注意力机制的动机",
-            "- 循环网络长序列梯度消失",
+            &[SectionLine {
+                title: "注意力机制".into(),
+                points: vec!["循环网络长序列梯度消失".into()],
+            }],
+            "",
             &["梯度消失".to_string()],
             &[],
             "",
@@ -366,9 +412,9 @@ mod tests {
         assert!(!sys.contains("会议秘书"), "讲座不该用会议秘书人设");
 
         let user = &lecture[1].content;
-        assert!(user.contains("知识笔记"), "讲座模式的字段用词应不同：{user}");
+        assert!(user.contains("已分模块笔记"), "讲座模式的字段用词应不同：{user}");
         assert!(user.contains("核心概念"), "讲座模式应使用「核心概念」而不是「关键结论」");
-        assert!(!user.contains("讨论纪要"), "讲座模式不该出现会议用词");
+        assert!(!user.contains("已分段纪要"), "讲座模式不该出现会议用词");
         assert!(!user.contains("待办事项"), "讲座模式不该出现待办骨架");
 
         // 会议模式保持原样
@@ -376,6 +422,7 @@ mod tests {
             SummaryMode::Meeting,
             "产品周会",
             "",
+            &[],
             "",
             &[],
             &[],
@@ -421,6 +468,7 @@ mod tests {
             SummaryMode::Meeting,
             "周会",
             "已有总览",
+            &[],
             "- 已有要点",
             &[],
             &[],
@@ -439,11 +487,23 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_contains_a_shot_example() {
-        let msgs = build("随便");
-        let sys = &msgs[0].content;
-        assert!(sys.contains("正确输出"), "系统提示应包含示例");
-        assert!(sys.contains("不要把它抄进输出里"));
+    fn system_prompt_forbids_copying_itself() {
+        // 血泪教训：提示词里放 few-shot 示例，小模型会把示例**原样抄进结果**。
+        // 用户看到的就是一段跟他毫无关系的「示例内容」，还以为是程序坏了。
+        // 所以：不给示例，并且明确禁止照抄提示词。
+        for mode in [SummaryMode::Meeting, SummaryMode::Lecture] {
+            let sys = mode.system_prompt();
+            assert!(
+                sys.contains("不要照抄") || sys.contains("绝对不要照抄"),
+                "{:?} 的提示词必须明确禁止照抄",
+                mode
+            );
+            assert!(
+                !sys.contains("正确输出"),
+                "{:?} 的提示词不应再包含 few-shot 示例（会被原样抄走）",
+                mode
+            );
+        }
     }
 
     #[test]
@@ -452,6 +512,7 @@ mod tests {
             SummaryMode::Meeting,
             "周会",
             "讨论了增长",
+            &[],
             "- 营收 +18%",
             &["增长主要来自企业版".to_string()],
             &["确定下季度目标".to_string()],
@@ -466,7 +527,6 @@ mod tests {
         );
         let user = &msgs[1].content;
         assert!(user.contains("讨论了增长"));
-        assert!(user.contains("营收 +18%"));
         assert!(user.contains("增长主要来自企业版"));
         assert!(user.contains("张三代办：出埋点方案"));
     }

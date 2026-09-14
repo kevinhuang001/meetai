@@ -202,13 +202,23 @@ export interface ActionItem {
   due: string;
 }
 
+/** 纪要分段：模型按议题/阶段自己切，并随会议推进重新分段 */
+export interface SummarySection {
+  title: string;
+  points: string[];
+  /** 这一段覆盖到的时间位置（毫秒），0 表示未知 */
+  untilMs: number;
+}
+
 export interface SummaryState {
   /** 刚刚说了什么（最近 liveWindowSecs 秒） */
   live: string;
   /** 整场会议 2~4 句总览 */
   overview: string;
-  /** markdown 无序列表形式的完整纪要 */
+  /** 由 sections 派生的 markdown 列表（导出与完整纪要复用） */
   summary: string;
+  /** 按议题分好的完整纪要：覆盖会议开始到现在的全部内容 */
+  sections: SummarySection[];
   keyPoints: string[];
   decisions: string[];
   actionItems: ActionItem[];
@@ -448,6 +458,7 @@ export function emptySummary(): SummaryState {
     live: "",
     overview: "",
     summary: "",
+    sections: [],
     keyPoints: [],
     decisions: [],
     actionItems: [],

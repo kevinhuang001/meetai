@@ -108,7 +108,7 @@ cmake --build build -j --target whisper-server
 #                                             ↑ 这一项别省：whisper-server 默认按英文识别，
 #                                               中文语音会被转成英文乱码（详见「识别语言归谁管」）
 # ② 纪要服务：Ollama
-ollama pull qwen2.5:7b
+ollama pull qwen3.5:2b
 ollama serve                                          # 默认就在 127.0.0.1:11434
 ```
 
@@ -122,7 +122,7 @@ ollama serve                                          # 默认就在 127.0.0.1:1
 | 语音识别 → 模型名 | `whisper-1`（whisper.cpp server 不校验这个名字，随便填一个非空的即可） |
 | 语音识别 → API Key | 留空 |
 | AI 接口 → Base URL | `http://127.0.0.1:11434/v1` |
-| AI 接口 → 模型名 | 你 `ollama pull` 下来的模型，例如 `qwen2.5:7b` |
+| AI 接口 → 模型名 | 你 `ollama pull` 下来的模型，例如 `qwen3.5:2b` |
 | AI 接口 → API Key | 留空 |
 
 两个「测试连接」都应该立刻通过。**本地/局域网/Tailscale 地址都会自动绕过系统代理**

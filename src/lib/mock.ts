@@ -301,7 +301,7 @@ const PRESETS: AiPreset[] = [
     id: "ollama",
     name: "本地 Ollama",
     baseUrl: "http://localhost:11434/v1",
-    model: "qwen2.5:7b",
+    model: "qwen3.5:2b",
     note: "完全离线，无需 api key",
     needsKey: false,
     jsonMode: true,
@@ -462,6 +462,41 @@ function makeSummary(rev: number, scriptIndex: number, live: string): SummarySta
     ]
       .filter(Boolean)
       .join("\n"),
+    sections: [
+      {
+        title: "三季度复盘",
+        points: [
+          "营收环比 +18%，主要来自企业版订阅",
+          "客户流失率环比上升 2 个百分点，集中在中小客户，首因是上手成本高",
+        ],
+        untilMs: 9_000,
+      },
+      ...(reached(4)
+        ? [
+            {
+              title: "下季度目标",
+              points: [
+                "目标定为环比 +15%，重心从拉新转向留存",
+                "前置依赖：引导流程重构需在 10 月底前完成",
+              ],
+              untilMs: 24_000,
+            },
+          ]
+        : []),
+      ...(reached(5)
+        ? [
+            {
+              title: "上线节奏与风险",
+              points: [
+                "新版本：11/10 灰度、11/24 全量",
+                reached(9) ? "数据埋点方案需先统一指标口径" : "",
+                reached(10) ? "市场预算审批未完成，可能影响 11 月投放" : "",
+              ].filter(Boolean),
+              untilMs: 42_000,
+            },
+          ]
+        : []),
+    ],
     keyPoints: [
       "企业版订阅是增长主引擎",
       reached(3) ? "中小客户上手成本高是流失主因" : "",
@@ -469,9 +504,10 @@ function makeSummary(rev: number, scriptIndex: number, live: string): SummarySta
     ].filter(Boolean),
     decisions: [reached(5) ? "确定新版本 11/10 灰度、11/24 全量" : ""].filter(Boolean),
     actionItems: [
-      reached(7) ? { text: "完成引导流程重构并可测试", owner: "对方", due: "10/28" } : null,
-      reached(9) ? { text: "输出指标口径与数据看板初稿", owner: "对方", due: "下周三" } : null,
-      reached(11) ? { text: "找财务确认市场预算审批进度", owner: "我", due: "明天" } : null,
+      // 负责人写「谁认领的」这件事本身没变，但不再假设是「我 / 对方」
+      reached(7) ? { text: "完成引导流程重构并可测试", owner: "", due: "10/28" } : null,
+      reached(9) ? { text: "输出指标口径与数据看板初稿", owner: "", due: "下周三" } : null,
+      reached(11) ? { text: "找财务确认市场预算审批进度", owner: "", due: "明天" } : null,
     ].filter((x): x is { text: string; owner: string; due: string } => x !== null),
     topics: scriptIndex >= 5 ? ["增长复盘", "留存", "版本节奏", "埋点口径"] : ["增长复盘"],
     updatedAt: Date.now(),

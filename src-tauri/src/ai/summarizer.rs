@@ -14,6 +14,24 @@ use crate::error::{AppError, AppResult};
 use crate::util::{now_ms, truncate_chars};
 
 /// 纪要正文与列表的上限，防止长时间会议把状态撑爆
+/// 把分段渲染成 markdown 无序列表（导出、完整纪要都复用它）
+pub fn sections_to_markdown(sections: &[SummarySection]) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for sec in sections {
+        if sections.len() > 1 {
+            out.push(format!("**{}**", sec.title));
+        }
+        for p in &sec.points {
+            out.push(format!("- {p}"));
+        }
+    }
+    out.join("\n")
+}
+
+/// 分段数量上限（够覆盖两三个小时的会议，又不至于让面板失控）
+const MAX_SECTIONS: usize = 40;
+/// 每段要点上限
+const MAX_SECTION_POINTS: usize = 12;
 const MAX_SUMMARY_CHARS: usize = 4_000;
 const MAX_LIST_ITEMS: usize = 20;
 const MAX_TOPICS: usize = 8;
@@ -60,6 +78,22 @@ impl ActionItemRaw {
     }
 }
 
+/// 纪要的一个分段：模型按议题/阶段自己切，并随着会议推进**重新分段**。
+///
+/// 为什么要有分段：纪要要展示的是**从会议开始到现在的全部内容**。
+/// 平铺成一长串要点没法看，而按「谁在讲什么」切段之后，
+/// 用户扫一眼就知道整场会议都覆盖了哪些块、讲到哪了。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummarySection {
+    /// 分段标题，例如「三季度复盘」「注意力机制」
+    pub title: String,
+    pub points: Vec<String>,
+    /// 这一段覆盖到的时间位置（毫秒），用于显示「讲到哪」
+    #[serde(default)]
+    pub until_ms: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SummaryState {
@@ -69,6 +103,8 @@ pub struct SummaryState {
     pub overview: String,
     /// markdown 无序列表形式的完整纪要
     pub summary: String,
+    /// 按议题分好的完整纪要（覆盖会议开始到现在的全部内容）
+    pub sections: Vec<SummarySection>,
     pub key_points: Vec<String>,
     pub decisions: Vec<String>,
     pub action_items: Vec<ActionItem>,
@@ -90,6 +126,7 @@ impl Default for SummaryState {
             live: String::new(),
             overview: String::new(),
             summary: String::new(),
+            sections: Vec::new(),
             key_points: Vec::new(),
             decisions: Vec::new(),
             action_items: Vec::new(),
@@ -154,6 +191,9 @@ pub struct SummaryPatch {
     pub overview: Option<String>,
     #[serde(alias = "summaryMarkdown", alias = "minutes", alias = "notes")]
     pub summary: Option<String>,
+    /// 分段纪要：模型每次都要输出**完整**的分段列表（含之前的所有段）
+    #[serde(alias = "outline", alias = "blocks", alias = "chapters")]
+    pub sections: Option<Vec<SectionRaw>>,
     #[serde(alias = "key_points", alias = "keypoints", alias = "points", alias = "highlights")]
     pub key_points: Option<Vec<String>>,
     #[serde(alias = "decisions_made", alias = "conclusions")]
@@ -162,6 +202,17 @@ pub struct SummaryPatch {
     pub action_items: Option<Vec<ActionItemRaw>>,
     #[serde(alias = "topic", alias = "current_topics")]
     pub topics: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SectionRaw {
+    #[serde(alias = "heading", alias = "name", alias = "topic", alias = "segment")]
+    pub title: Option<String>,
+    #[serde(alias = "items", alias = "bullets", alias = "content", alias = "details")]
+    pub points: Option<Vec<String>>,
+    #[serde(alias = "untilMs", alias = "endMs", alias = "at")]
+    pub until_ms: Option<i64>,
 }
 
 /// 把模型返回的补丁合并进状态。返回是否发生了实质变化。
@@ -188,11 +239,53 @@ pub fn apply_patch(
             changed = true;
         }
     }
+    // 兼容：模型偶尔仍会返回 summary（旧提示词/别的模型）。没有分段时用它兜底，
+    // 有分段时以分段为准（分段才是主内容）。
     if let Some(v) = patch.summary {
         let v = normalize_markdown_list(&v);
-        if !v.is_empty() && v != state.summary {
+        if !v.is_empty() && v != state.summary && state.sections.is_empty() {
             state.summary = truncate_chars(&v, MAX_SUMMARY_CHARS);
             changed = true;
+        }
+    }
+
+    // 分段纪要：非空就整体替换（模型每次都输出完整列表，直接换掉最省事也最不容易串味）。
+    // 空列表保留旧值 —— 模型偶尔会漏输出，直接清空等于把整场纪要丢了。
+    if let Some(raw) = patch.sections {
+        let mut sections: Vec<SummarySection> = Vec::new();
+        for r in raw {
+            let title = collapse_ws(r.title.as_deref().unwrap_or_default());
+            let points = clean_list(r.points.unwrap_or_default(), MAX_SECTION_POINTS);
+            if title.is_empty() && points.is_empty() {
+                continue;
+            }
+            let title = if title.is_empty() {
+                "未命名段落".to_string()
+            } else {
+                truncate_chars(&title, 60)
+            };
+            // 标题相同的相邻段合并，避免模型把同一议题拆成好几段
+            if let Some(last) = sections.last_mut() {
+                if last.title == title {
+                    last.points.extend(points);
+                    last.points.truncate(MAX_SECTION_POINTS);
+                    continue;
+                }
+            }
+            sections.push(SummarySection {
+                title,
+                points,
+                until_ms: r.until_ms.unwrap_or(0),
+            });
+        }
+        if !sections.is_empty() {
+            sections.truncate(MAX_SECTIONS);
+            if sections != state.sections {
+                state.sections = sections;
+                // summary 由分段派生，不额外让模型维护一份重复内容
+                state.summary = truncate_chars(&sections_to_markdown(&state.sections), MAX_SUMMARY_CHARS);
+                changed = true;
+            }
         }
     }
 

@@ -595,34 +595,41 @@ fn e2e_ai_client_reaches_real_endpoint() {
 
 #[test]
 #[ignore = "需要真实 AI 服务（本地 Ollama）；用 --ignored 运行"]
-fn e2e_lecture_mode_produces_knowledge_notes() {
-    // 讲座模式不是「换个词」：要真的产出知识点笔记，而不是会议套话。
-    // 这里用真实模型跑一遍，防止提示词只在字符串层面「看起来对」。
-    let lecture = AiSettings {
-        summary_mode: "lecture".into(),
-        ..ollama_settings()
-    };
-    let meeting = AiSettings {
-        summary_mode: "meeting".into(),
-        ..ollama_settings()
-    };
+fn e2e_summary_stays_grounded_in_the_transcript() {
+    // 这条测试的存在理由：之前我写了一条「讲座模式」测试，用「注意力机制」当素材，
+    // 而提示词里的 few-shot 示例恰好也是「注意力机制」—— 模型把示例原样抄了出来，
+    // 测试却因为断言了示例里本来就有的词而「通过」。等于自己骗自己。
+    //
+    // 现在改成：素材用提示词里**绝不可能出现**的专有名词，
+    // 并反过来断言提示词里的示例词一个都不许出现。
+    const LEAK_MARKERS: [&str; 6] = [
+        "注意力机制",
+        "梯度消失",
+        "三季度",
+        "达摩院",
+        "留存率",
+        "引导流程",
+    ];
+
     let client = Arc::new(AiClient::new().unwrap());
+    let base = ollama_settings();
     if !test_runtime()
-        .block_on(client.test_connection(lecture.active().unwrap()))
+        .block_on(client.test_connection(base.active().unwrap()))
         .ok
     {
         skip("AI 服务不可用");
         return;
     }
 
-    let transcript = "[00:00:03] 今天我们讲注意力机制，先说它解决什么问题。\n\
-[00:00:11] 循环网络在长序列上会梯度消失，信息传不过去。\n\
-[00:00:22] 注意力机制让任意两个位置可以直接建立联系，路径长度从 O(n) 变成 O(1)。\n\
-[00:00:35] 注意，这里的复杂度说的是信息传递路径，不是计算量，这是最容易记错的地方。";
+    // 素材：虚构的、与提示词无关的内容
+    let transcript = "[00:00:04] 今天评审「苍鹭」项目的冷链仓改造方案。\n\
+[00:00:13] 一号仓的月台改造预算批下来了，二百三十万，工期六周。\n\
+[00:00:26] 分拣线要换成环形布局，不然旺季峰值吞吐顶不住。\n\
+[00:00:38] 冷库温控探头必须做双路冗余，这是去年的整改要求。";
 
     let run = |settings: &AiSettings| {
         let mut session = Session::new(
-            "机器学习导论".into(),
+            "冷链仓改造评审".into(),
             SessionConfig {
                 model_id: "test".into(),
                 enable_mic: false,
@@ -634,8 +641,8 @@ fn e2e_lecture_mode_produces_knowledge_notes() {
         session.push_segment(meeting_hear_lib::session::TranscriptSegment {
             id: 0,
             text: transcript.into(),
-            start_ms: 3_000,
-            end_ms: 40_000,
+            start_ms: 4_000,
+            end_ms: 45_000,
             confidence: None,
             suspect: None,
         });
@@ -648,29 +655,31 @@ fn e2e_lecture_mode_produces_knowledge_notes() {
         out
     };
 
-    let lec = run(&lecture);
-    eprintln!("讲座 overview: {}", lec.overview);
-    eprintln!("讲座 summary: {}", lec.summary);
-    eprintln!("讲座 keyPoints: {:?}", lec.key_points);
-    assert!(!lec.key_points.is_empty(), "讲座模式应产出核心概念");
-    let all = format!(
-        "{} {} {:?} {:?}",
-        lec.overview, lec.summary, lec.key_points, lec.decisions
-    );
-    assert!(
-        all.contains("注意力") || all.contains("梯度消失"),
-        "讲座纪要里应出现讲过的知识点，实际：{all}"
-    );
+    for mode in ["meeting", "lecture"] {
+        let settings = AiSettings {
+            summary_mode: mode.into(),
+            ..ollama_settings()
+        };
+        let sum = run(&settings);
+        let all = format!(
+            "{} {} {:?} {:?} {:?}",
+            sum.overview, sum.summary, sum.sections, sum.key_points, sum.decisions
+        );
+        eprintln!("=== {mode} 模式实际输出 ===\n{all}\n");
 
-    let meet = run(&meeting);
-    eprintln!("会议 overview: {}", meet.overview);
-    eprintln!("会议 summary: {}", meet.summary);
-    // 同一段内容用会议模式跑，不应凭空编造「参会人/议程」这类会议要素
-    let meet_all = format!("{} {}", meet.overview, meet.summary);
-    assert!(
-        !meet_all.contains("参会人") && !meet_all.contains("议程安排"),
-        "会议模式不得编造会议要素：{meet_all}"
-    );
+        // 1) 提到素材里的真实信息，说明模型确实在总结输入
+        assert!(
+            all.contains("苍鹭") || all.contains("冷链") || all.contains("月台") || all.contains("分拣"),
+            "[{mode}] 纪要没有用上转写里的任何内容，可能又在照抄提示词：{all}"
+        );
+        // 2) 提示词里的示例词一个都不许出现
+        for marker in LEAK_MARKERS {
+            assert!(
+                !all.contains(marker),
+                "[{mode}] 输出里出现了提示词中的词「{marker}」，模型在照抄提示词而不是总结输入：{all}"
+            );
+        }
+    }
 }
 
 #[test]

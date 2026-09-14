@@ -131,9 +131,12 @@ export function Sidebar() {
     toast("success", "删除会话", `已删除「${item.title}」`);
   };
 
+  // 录音中时这个按钮就是「回到正在进行的会议」——详情页顶部的返回按钮删掉之后，
+  // 必须留一条能回去的路，否则录音还在继续、人却卡在历史详情里出不来。
+  const recording = Boolean(live);
   const newMeeting = () => {
     setView("recording");
-    void startRecording();
+    if (!recording) void startRecording();
   };
 
   return (
@@ -143,13 +146,13 @@ export function Sidebar() {
           variant="primary"
           onClick={newMeeting}
           testId="sidebar-new-meeting"
-          ariaLabel="新建会议"
-          title="新建会议（开始录音）"
+          ariaLabel={recording ? "回到当前会议" : "新建会议"}
+          title={recording ? "回到正在进行的会议" : "新建会议（开始录音）"}
           className="sb-new"
           disabled={onboardingOpen}
         >
-          <IconPlus />
-          {collapsed ? null : <span>新建会议</span>}
+          {recording ? <span className="rec-dot" aria-hidden="true" /> : <IconPlus />}
+          {collapsed ? null : <span>{recording ? "当前会议" : "新建会议"}</span>}
         </Button>
         <button
           className="icon-btn"

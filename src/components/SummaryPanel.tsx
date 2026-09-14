@@ -14,7 +14,8 @@ export interface SummaryPanelProps {
   latestEndMs: number;
   ready: boolean;
   notReadyReason: string;
-  onSummarizeNow: () => void;
+  /** 已不再渲染按钮，保留参数以免调用方大改 */
+  onSummarizeNow?: () => void;
   onOpenAiSettings: () => void;
   busy?: boolean;
   /**
@@ -73,7 +74,6 @@ export function SummaryPanel({
   latestEndMs,
   ready,
   notReadyReason,
-  onSummarizeNow,
   onOpenAiSettings,
   busy = false,
   collapsed: collapsedProp,
@@ -154,27 +154,31 @@ export function SummaryPanel({
               </div>
             ) : null}
 
-            <section className="live-card" data-testid="summary-live-card">
-              <div className="live-head">
-                <span className="live-title">最近一段</span>
-                {thinking ? (
-                  <span className="thinking-dot">
-                    <i />
-                    <i />
-                    <i />
-                  </span>
-                ) : null}
-              </div>
-              {thinking ? (
-                <ThinkingSkeleton />
-              ) : (
-                <p className="live-text" data-testid="summary-live">
-                  {summary.live || "开始说话后，这里会回顾最近这一段说了什么。"}
-                </p>
-              )}
-            </section>
+            {/* 纪要展示的是**从会议开始到现在的全部内容**，按议题分段。
+                之前只有一个「最近一段」，等于把前面讲的全丢了。 */}
+            {summary.sections.length ? (
+              <section className="block" data-testid="summary-sections">
+                {summary.sections.map((sec, i) => (
+                  <div className="sum-section" key={`${i}-${sec.title}`}>
+                    <h4 className="sum-section-title">
+                      {sec.title}
+                      {sec.untilMs > 0 ? (
+                        <span className="dim tiny mono">{formatClock(sec.untilMs)}</span>
+                      ) : null}
+                    </h4>
+                    <ul className="kv-list">
+                      {sec.points.map((p, j) => (
+                        <li key={`${j}-${p}`}>{p}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </section>
+            ) : thinking ? (
+              <ThinkingSkeleton />
+            ) : null}
 
-            {/* 面板只留「边开会边要看」的三块；关键结论/已达成决定/主题等
+            {/* 面板只留「边开会边要看」的内容；关键结论/已达成决定/主题等
                 仍然照常生成，并且都会出现在导出的会议纪要里，不在这里重复展示。 */}
             {summary.overview.trim() ? (
               <section className="block">
@@ -185,7 +189,8 @@ export function SummaryPanel({
               </section>
             ) : null}
 
-            {summary.summary.trim() || summary.keyPoints.length ? (
+            {/* 只有在没有分段时才退回平铺要点（老数据/模型没给分段） */}
+            {!summary.sections.length && (summary.summary.trim() || summary.keyPoints.length) ? (
               <section className="block">
                 <h4>纪要要点</h4>
                 <MarkdownList text={summary.summary} fallback={summary.keyPoints} />
@@ -225,25 +230,23 @@ export function SummaryPanel({
             ) : null}
           </div>
 
+          {/* 「立即总结」按钮已移除：自动滚动总结本来就够用，
+              手动按钮只会让人怀疑「是不是不点就不总结」。
+              状态改为一行只读信息，需要时能看到总结进度。 */}
           <footer className="panel-foot">
-            {/* 只在真的落后时才提示；平时不占一行 */}
-            {lagSecs > 20 ? (
-              <div className="lag warn small" data-testid="summary-lag">
-                纪要落后转写 {lagSecs} 秒
-              </div>
-            ) : null}
-            <Button
-              variant="primary"
-              onClick={onSummarizeNow}
-              disabled={busy || thinking}
-              testId="summarize-now"
-              className="block-btn"
-              title={`共总结 ${summary.calls} 次${
-                summary.updatedAt ? ` · 更新于 ${formatTimeOfDay(summary.updatedAt)}` : ""
-              }`}
-            >
-              {busy || thinking ? "总结中…" : "立即总结"}
-            </Button>
+            <div className="panel-foot-line">
+              {lagSecs > 20 ? (
+                <span className="lag warn small" data-testid="summary-lag">
+                  落后转写 {lagSecs} 秒
+                </span>
+              ) : null}
+              <span className="dim tiny" data-testid="summary-meta">
+                {thinking || busy ? "更新中…" : `共更新 ${summary.calls} 次`}
+                {summary.updatedAt && !thinking
+                  ? ` · ${formatTimeOfDay(summary.updatedAt)}`
+                  : ""}
+              </span>
+            </div>
           </footer>
         </>
       )}

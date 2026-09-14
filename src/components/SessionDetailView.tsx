@@ -31,7 +31,6 @@ function pickDetail(remote: SessionDetail, cached: SessionDetail | null): Sessio
 
 export function SessionDetailView() {
   const detailId = useStore((s) => s.detailId);
-  const setView = useStore((s) => s.setView);
   const settings = useStore((s) => s.settings);
   const toast = useStore((s) => s.toast);
 
@@ -90,9 +89,8 @@ export function SessionDetailView() {
       <div className="stage detail">
         <header className="detail-head">
           <div className="detail-head-left">
-            <Button variant="ghost" onClick={() => setView("recording")} testId="detail-back" ariaLabel="返回当前会议">
-              ← 返回当前会议
-            </Button>
+            {/* 「返回当前会议」按钮已移除：左侧历史栏点一下「新建会议/当前会议」即可回去，
+                这个按钮只会让详情页顶部变挤。 */}
             <div className="detail-title">
               <h1 data-testid="detail-title">{detail?.title ?? "加载中…"}</h1>
               <p className="dim small">

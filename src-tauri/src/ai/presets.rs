@@ -76,7 +76,7 @@ const PRESETS: &[(&str, &str, &str, &str, &str, bool, bool)] = &[
         "ollama",
         "本地 Ollama",
         "http://localhost:11434/v1",
-        "qwen2.5:7b",
+        "qwen3.5:2b",
         "完全离线，数据不出本机；需先 ollama pull 模型",
         false,
         true,
