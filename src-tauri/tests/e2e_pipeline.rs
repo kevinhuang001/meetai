@@ -37,7 +37,7 @@ use meeting_hear_lib::asr::client::{AsrClient, TranscribeRequest};
 use meeting_hear_lib::audio::capture::SourceKind;
 use meeting_hear_lib::events::{event, CollectingEmitter, Emitter};
 use meeting_hear_lib::pipeline::{self, PipelineOptions};
-use meeting_hear_lib::session::{Session, SessionConfig, SessionStatus, Speaker};
+use meeting_hear_lib::session::{Session, SessionConfig, SessionStatus};
 use meeting_hear_lib::settings::{AiProvider, AiSettings, AsrProvider, AsrSettings, VadSettings};
 
 /* ==========================================================================
@@ -117,6 +117,7 @@ fn ollama_settings() -> AiSettings {
         extra_headers: Vec::new(),
     };
     AiSettings {
+        summary_mode: "meeting".into(),
         enabled: true,
         active_provider_id: provider.id.clone(),
         providers: vec![provider],
@@ -162,7 +163,7 @@ fn run_pipeline_on_audio(
     live_preview: bool,
     ai: Option<AiSettings>,
 ) -> (Arc<parking_lot::Mutex<Session>>, CollectingEmitter) {
-    let mut session = Session::new(
+    let session = Session::new(
         "E2E 测试会议".into(),
         SessionConfig {
             model_id: format!("{} · {}", provider.name, provider.model),
@@ -265,10 +266,9 @@ fn e2e_transcribes_jfk_wav_through_real_asr_service() {
     eprintln!("=== 识别结果（{}）===", provider.endpoint());
     for seg in &s.segments {
         eprintln!(
-            "[{:>7} ms → {:>7} ms] {}：{}",
+            "[{:>7} ms → {:>7} ms] {}",
             seg.start_ms,
             seg.end_ms,
-            seg.speaker.label(),
             seg.text
         );
     }
@@ -335,7 +335,8 @@ fn e2e_transcribes_jfk_wav_through_real_asr_service() {
     assert!(s.stats.rtf > 0.0, "没有记录实时率");
     assert!(s.stats.latency_ms > 0, "没有记录请求延迟");
     assert_eq!(s.status, SessionStatus::Finished);
-    assert!(s.segments.iter().all(|x| x.speaker == Speaker::Me));
+    // 应用不区分说话人：转写段里不应再有这类标记
+    assert!(s.segments.iter().all(|x| !x.text.contains("我：") && !x.text.contains("对方：")));
 
     // 6) 关闭增量预览时不应产生任何带文本的 partial 事件
     let with_text = emitter
@@ -590,6 +591,86 @@ fn e2e_ai_client_reaches_real_endpoint() {
     eprintln!("模型输出：{}", out.content);
     assert!(!out.content.trim().is_empty());
     assert!(out.usage.total_tokens > 0, "接口没有返回 usage");
+}
+
+#[test]
+#[ignore = "需要真实 AI 服务（本地 Ollama）；用 --ignored 运行"]
+fn e2e_lecture_mode_produces_knowledge_notes() {
+    // 讲座模式不是「换个词」：要真的产出知识点笔记，而不是会议套话。
+    // 这里用真实模型跑一遍，防止提示词只在字符串层面「看起来对」。
+    let lecture = AiSettings {
+        summary_mode: "lecture".into(),
+        ..ollama_settings()
+    };
+    let meeting = AiSettings {
+        summary_mode: "meeting".into(),
+        ..ollama_settings()
+    };
+    let client = Arc::new(AiClient::new().unwrap());
+    if !test_runtime()
+        .block_on(client.test_connection(lecture.active().unwrap()))
+        .ok
+    {
+        skip("AI 服务不可用");
+        return;
+    }
+
+    let transcript = "[00:00:03] 今天我们讲注意力机制，先说它解决什么问题。\n\
+[00:00:11] 循环网络在长序列上会梯度消失，信息传不过去。\n\
+[00:00:22] 注意力机制让任意两个位置可以直接建立联系，路径长度从 O(n) 变成 O(1)。\n\
+[00:00:35] 注意，这里的复杂度说的是信息传递路径，不是计算量，这是最容易记错的地方。";
+
+    let run = |settings: &AiSettings| {
+        let mut session = Session::new(
+            "机器学习导论".into(),
+            SessionConfig {
+                model_id: "test".into(),
+                enable_mic: false,
+                enable_loopback: false,
+                mic_label: None,
+                loopback_label: None,
+            },
+        );
+        session.push_segment(meeting_hear_lib::session::TranscriptSegment {
+            id: 0,
+            text: transcript.into(),
+            start_ms: 3_000,
+            end_ms: 40_000,
+            confidence: None,
+            suspect: None,
+        });
+        let session = Arc::new(parking_lot::Mutex::new(session));
+        let emitter: Arc<dyn Emitter> = Arc::new(CollectingEmitter::new());
+        test_runtime()
+            .block_on(pipeline::summarize_once(&client, settings, &session, &emitter, true))
+            .expect("总结失败");
+        let out = session.lock().summary.clone();
+        out
+    };
+
+    let lec = run(&lecture);
+    eprintln!("讲座 overview: {}", lec.overview);
+    eprintln!("讲座 summary: {}", lec.summary);
+    eprintln!("讲座 keyPoints: {:?}", lec.key_points);
+    assert!(!lec.key_points.is_empty(), "讲座模式应产出核心概念");
+    let all = format!(
+        "{} {} {:?} {:?}",
+        lec.overview, lec.summary, lec.key_points, lec.decisions
+    );
+    assert!(
+        all.contains("注意力") || all.contains("梯度消失"),
+        "讲座纪要里应出现讲过的知识点，实际：{all}"
+    );
+
+    let meet = run(&meeting);
+    eprintln!("会议 overview: {}", meet.overview);
+    eprintln!("会议 summary: {}", meet.summary);
+    // 同一段内容用会议模式跑，不应凭空编造「参会人/议程」这类会议要素
+    let meet_all = format!("{} {}", meet.overview, meet.summary);
+    assert!(
+        !meet_all.contains("参会人") && !meet_all.contains("议程安排"),
+        "会议模式不得编造会议要素：{meet_all}"
+    );
 }
 
 #[test]

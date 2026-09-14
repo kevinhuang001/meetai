@@ -1,7 +1,6 @@
 /** 顶栏：应用名、可编辑会议标题、状态胶囊、计时器、设置/历史入口 */
 import { useEffect, useRef, useState } from "react";
 import { formatClock } from "../lib/contract";
-import { IconPanel } from "./icons";
 import { api } from "../lib/api";
 import { guard, useLevelStore, useStore } from "../store";
 
@@ -40,7 +39,6 @@ export function TopBar() {
   const pendingTitle = useStore((s) => s.pendingTitle);
   const setPendingTitle = useStore((s) => s.setPendingTitle);
   const patchSession = useStore((s) => s.patchSession);
-  const collapsed = useStore((s) => s.sidebarCollapsed || s.sidebarNarrow);
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -112,19 +110,9 @@ export function TopBar() {
         <SessionTimer />
       </div>
 
-      <div className="topbar-right">
-        {/* 快捷键提示不再常驻（设置 → 通用里有），设置按钮也移除了
-            —— 左侧 sidebar 底部已经有一个。 */}
-        <button
-          className={collapsed ? "icon-btn" : "icon-btn active"}
-          aria-label={collapsed ? "展开历史栏" : "折叠历史栏"}
-          title="折叠 / 展开左侧历史栏"
-          data-testid="toggle-sidebar"
-          onClick={() => useStore.getState().toggleSidebar()}
-        >
-          <IconPanel />
-        </button>
-      </div>
+      {/* 右上角不再放折叠按钮：左侧历史栏顶部已经有一个，
+          两处并存的后果是用户根本分不清哪个管哪块。 */}
+      <div className="topbar-right" />
     </header>
   );
 }

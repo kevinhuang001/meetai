@@ -7,7 +7,7 @@
  *  - 用户往上滚动即暂停自动吸底，右下角出现「回到最新」。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { formatClock, SPEAKER_LABEL, type TranscriptSegment } from "../lib/contract";
+import { formatClock, type TranscriptSegment } from "../lib/contract";
 import { usePartialStore } from "../store";
 import { copyText } from "../lib/util";
 import { Button } from "./ui";
@@ -15,7 +15,7 @@ import { IconCopy, IconSearch } from "./icons";
 
 const NEAR_BOTTOM_PX = 48;
 
-function ActiveRow({ onGrow, showSpeaker }: { onGrow: () => void; showSpeaker: boolean }) {
+function ActiveRow({ onGrow }: { onGrow: () => void }) {
   const partial = usePartialStore((s) => s.partial);
   useEffect(() => {
     if (partial) onGrow();
@@ -27,7 +27,6 @@ function ActiveRow({ onGrow, showSpeaker }: { onGrow: () => void; showSpeaker: b
   return (
     <div className="t-row active" data-testid="partial-row">
       <span className="t-time mono">{formatClock(partial.startMs)}</span>
-      {showSpeaker ? <span className="t-speaker speaker-unknown">说话中</span> : null}
       <span className="t-text">
         <span className="committed">{partial.committed}</span>
         <span className="tentative">{partial.tentative}</span>
@@ -49,7 +48,6 @@ function SegmentRow({ seg, onCopied }: { seg: TranscriptSegment; onCopied: () =>
       data-suspect={suspect ? "1" : undefined}
     >
       <span className="t-time mono">{formatClock(seg.startMs)}</span>
-      <span className={`t-speaker speaker-${seg.speaker}`}>{SPEAKER_LABEL[seg.speaker]}</span>
       <span className="t-text">{seg.text}</span>
       {suspect ? (
         <span
@@ -65,7 +63,7 @@ function SegmentRow({ seg, onCopied }: { seg: TranscriptSegment; onCopied: () =>
         aria-label={`复制这条转写：${seg.text.slice(0, 12)}`}
         title="复制这一条"
         onClick={() => {
-          void copyText(`[${formatClock(seg.startMs)}] ${SPEAKER_LABEL[seg.speaker]}：${seg.text}`).then((ok) => {
+          void copyText(`[${formatClock(seg.startMs)}] ${seg.text}`).then((ok) => {
             if (ok) onCopied();
           });
         }}
@@ -104,9 +102,7 @@ export function TranscriptList({
     if (!q) return segments;
     return segments.filter(
       (s) =>
-        s.text.toLowerCase().includes(q) ||
-        SPEAKER_LABEL[s.speaker].includes(q) ||
-        formatClock(s.startMs).includes(q),
+        s.text.toLowerCase().includes(q) || formatClock(s.startMs).includes(q),
     );
   }, [segments, filter]);
 
@@ -152,7 +148,7 @@ export function TranscriptList({
 
   const copyAll = useCallback(() => {
     const body = filtered
-      .map((s) => `[${formatClock(s.startMs)}] ${SPEAKER_LABEL[s.speaker]}：${s.text}`)
+      .map((s) => `[${formatClock(s.startMs)}] ${s.text}`)
       .join("\n");
     void copyText(body).then((ok) => onNotify?.(ok ? `已复制 ${filtered.length} 条转写` : "复制失败，请检查剪贴板权限"));
   }, [filtered, onNotify]);
@@ -213,7 +209,7 @@ export function TranscriptList({
             {filtered.map((s) => (
               <SegmentRow key={s.id} seg={s} onCopied={() => onNotify?.("已复制这条转写")} />
             ))}
-            <ActiveRow onGrow={maybeScroll} showSpeaker />
+            <ActiveRow onGrow={maybeScroll} />
           </div>
         )}
       </div>

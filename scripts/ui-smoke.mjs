@@ -509,6 +509,44 @@ async function main() {
     const suspectCounter = await page.locator('[data-testid="transcript-suspect-count"]').count();
     check("c1d. 工具栏汇总可疑条数", suspectCounter === 1, `计数元素=${suspectCounter}`);
 
+    // c1e. 应用不再区分「我 / 对方」——会议可能不止一个人，也可能是线下会议
+    const speakerCells = await page.locator('[data-testid="transcript-list"] .t-speaker').count();
+    const segText = await page.locator('[data-testid="transcript-list"]').innerText();
+    check(
+      "c1e. 转写里没有「我 / 对方」这类说话人标记",
+      speakerCells === 0 && !/^我：|对方：/m.test(segText),
+      `标记数=${speakerCells}`,
+    );
+
+    // c1f. 转写与纪要在同一个面板里（一个头部服务两半内容）
+    const panelCount = await page.locator('[data-testid="meeting-panel"]').count();
+    const transcriptInPanel = await page
+      .locator('[data-testid="meeting-panel"] [data-testid="transcript-list"]')
+      .count();
+    const summaryInPanel = await page
+      .locator('[data-testid="meeting-panel"] [data-testid="summary-panel"]')
+      .count();
+    check(
+      "c1f. 纪要与转写同属一个会议面板",
+      panelCount === 1 && transcriptInPanel === 1 && summaryInPanel === 1,
+      `panel=${panelCount} transcript=${transcriptInPanel} summary=${summaryInPanel}`,
+    );
+
+    // c1g. 纪要不再叫「实时纪要」，并显示已经总结到哪一刻
+    const mpHead = (await page.locator('[data-testid="meeting-panel"] .mp-head').innerText()).replace(/\s+/g, " ");
+    const modeSwitch = await page.locator('[data-testid="recording-summary-mode"]').inputValue();
+    check(
+      "c1g. 面板头部提供「会议 / 讲座」模式切换",
+      modeSwitch === "meeting" || modeSwitch === "lecture",
+      `mode=${modeSwitch}，头部=${mpHead.slice(0, 40)}`,
+    );
+    const summaryHeadCount = await page.locator('[data-testid="summary-panel"] .panel-head').count();
+    check(
+      "c1h. 纪要不再自带第二个标题栏（折叠入口只有共享头部那一个）",
+      summaryHeadCount === 0,
+      `独立标题栏=${summaryHeadCount}`,
+    );
+
     await shot(page, "03-segments.png");
 
     // 正在录音的会话置顶并高亮（红点）
@@ -1060,8 +1098,17 @@ async function main() {
     await waitFor(async () => (await page.locator('[data-testid="settings-dialog"]').count()) === 0, { timeout: 8000 });
 
     /* ---------------------------------------------------------- sidebar 折叠 */
+    // 折叠按钮只能有一个：以前 sidebar 头部和右上角各一个，用户分不清哪个管哪块
+    const dupToggle = await page.locator('[data-testid="toggle-sidebar"]').count();
+    const sidebarToggle = await page.locator('[data-testid="sidebar-toggle"]').count();
+    check(
+      "m0. 折叠按钮只有一处（右上角重复的已删除）",
+      dupToggle === 0 && sidebarToggle === 1,
+      `右上角=${dupToggle}，历史栏=${sidebarToggle}`,
+    );
+
     // 宽窗口：手动折叠 → 记忆到 localStorage
-    await page.locator('[data-testid="toggle-sidebar"]').click();
+    await page.locator('[data-testid="sidebar-toggle"]').click();
     await waitFor(
       async () => (await page.locator('[data-testid="sidebar"]').getAttribute("data-collapsed")) === "true",
       { timeout: 5000, interval: 150, label: "等待 sidebar 折叠" },
@@ -1077,9 +1124,20 @@ async function main() {
     );
     check("m2. 折叠状态记忆在 localStorage", collapsedStored === "1", `meeting-hear:sidebar-collapsed=${collapsedStored}`);
 
+    // 折叠后历史栏必须有展开按钮，而且点了真的能展开
+    const expandBtn = await page.locator('[data-testid="sidebar-toggle"]').count();
+    const expandLabel = await page.locator('[data-testid="sidebar-toggle"]').getAttribute("aria-label");
+    check(
+      "m2b. 折叠后历史栏仍有展开按钮",
+      expandBtn === 1 && expandLabel === "展开历史栏",
+      `按钮=${expandBtn}，aria-label=${expandLabel}`,
+    );
+
     // 展开后 Ctrl+K 仍然能聚焦搜索框
-    await page.locator('[data-testid="toggle-sidebar"]').click();
+    await page.locator('[data-testid="sidebar-toggle"]').click();
     await sleep(200);
+    const expandedAttr = await page.locator('[data-testid="sidebar"]').getAttribute("data-collapsed");
+    check("m2c. 点展开按钮真的展开了历史栏", expandedAttr === "false", `data-collapsed=${expandedAttr}`);
     await page.keyboard.press("Control+k");
     const focusAgain = await page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? "");
     check("m3. 展开后 Ctrl+K 依旧聚焦搜索框", focusAgain === "sidebar-search", `activeElement=${focusAgain}`);

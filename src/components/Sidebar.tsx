@@ -154,9 +154,18 @@ export function Sidebar() {
         <button
           className="icon-btn"
           aria-label={collapsed ? "展开历史栏" : "折叠历史栏"}
-          title={narrow ? "窗口较窄，已自动折叠历史栏" : collapsed ? "展开历史栏（Ctrl/Cmd+K 搜索）" : "折叠历史栏"}
+          title={narrow ? "窗口较窄自动折叠了，点这里展开" : collapsed ? "展开历史栏（Ctrl/Cmd+K 搜索）" : "折叠历史栏"}
           data-testid="sidebar-toggle"
-          onClick={toggleSidebar}
+          onClick={() => {
+            // 窄窗口下 collapsed = 用户偏好 || narrow，只翻转偏好是没用的
+            //（表现为「点了展开没反应」）。展开时把 narrow 一起清掉。
+            if (collapsed) {
+              useStore.getState().setSidebarCollapsed(false);
+              useStore.getState().setSidebarNarrow(false);
+            } else {
+              toggleSidebar();
+            }
+          }}
         >
           <IconPanel />
         </button>

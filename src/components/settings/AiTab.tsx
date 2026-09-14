@@ -1,7 +1,14 @@
 /** 设置 · AI 接口 */
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
-import type { AiPreset, AiProvider, AiSettings, ConnectionTestResult } from "../../lib/contract";
+import type {
+  AiPreset,
+  AiProvider,
+  AiSettings,
+  ConnectionTestResult,
+  SummaryMode,
+} from "../../lib/contract";
+import { SUMMARY_MODE_DESC, SUMMARY_MODES } from "../../lib/contract";
 import { guard, useStore } from "../../store";
 import { Badge, Button, Field, Select, Slider, SwitchRow, TextInput } from "../ui";
 import type { TabProps } from "./SettingsDialog";
@@ -87,7 +94,7 @@ export function AiTab({ draft, set }: TabProps) {
       <section className="card">
         <h3>总开关</h3>
         <SwitchRow
-          label="启用 AI 实时纪要"
+          label="启用 AI 纪要"
           hint="关闭后录音仍会转写，但不会调用任何 AI 接口"
           checked={ai.enabled}
           onChange={(v) => patchAi({ enabled: v })}
@@ -107,6 +114,25 @@ export function AiTab({ draft, set }: TabProps) {
           onChange={(v) => patchAi({ finalReportOnStop: v })}
           testId="ai-final-report"
         />
+      </section>
+
+      <section className="card">
+        <h3>纪要模式</h3>
+        <Field
+          label="内容类型"
+          hint="两种场景要抓的东西不同，提示词也不同；录音中随时可切换"
+        >
+          <Select
+            value={ai.summaryMode}
+            options={SUMMARY_MODES.map((m) => ({ value: m.value, label: m.label }))}
+            onChange={(v) => patchAi({ summaryMode: v as SummaryMode })}
+            ariaLabel="纪要模式"
+            testId="ai-summary-mode"
+          />
+        </Field>
+        <p className="dim tiny" data-testid="ai-summary-mode-desc">
+          {SUMMARY_MODE_DESC[ai.summaryMode]}
+        </p>
       </section>
 
       <section className="card">

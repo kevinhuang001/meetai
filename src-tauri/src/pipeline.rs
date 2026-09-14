@@ -48,7 +48,7 @@ use crate::events::{
     self, event, AiStateKind, AiStatusEvent, AiSummaryEvent, AsrLevelEvent, AsrPartialEvent,
     AsrSegmentEvent, AsrStateEvent, AsrStateKind, Emitter, LevelItem, SessionUpdatedEvent,
 };
-use crate::session::{Session, Speaker, TranscriptSegment};
+use crate::session::{Session, TranscriptSegment};
 use crate::settings::{AiSettings, AsrProvider, AsrSettings, VadSettings};
 use crate::util::{level_to_display, now_ms};
 
@@ -84,30 +84,19 @@ impl SourceShare {
         }
     }
 
-    /// 双路采集时按能量占比判定「我 / 对方 / 双方」
-    pub fn speaker(&self) -> Speaker {
-        let total = self.mic + self.loopback;
-        if total <= 1e-9 {
-            return Speaker::Unknown;
-        }
-        let mic_ratio = self.mic / total;
-        if mic_ratio >= 0.78 {
-            Speaker::Me
-        } else if mic_ratio <= 0.22 {
-            Speaker::Others
-        } else {
-            Speaker::Mixed
-        }
-    }
 }
 
-/// 只有一路时的说话人归属由调用方指定
-pub fn speaker_for_single_source(kind: Option<SourceKind>) -> Speaker {
-    match kind {
-        Some(SourceKind::Microphone) => Speaker::Me,
-        Some(SourceKind::Loopback) => Speaker::Others,
-        None => Speaker::Unknown,
+/// 双路采集时麦克风占能量的比例（0~1）。
+///
+/// 仅用于日志/诊断：**不再据此推断「谁在说话」**。
+/// 会议里可能不止一个人，也可能是线下会议、本地播放的音频，
+/// 「我 / 对方」这种二分本身就不成立，标错了还不如不标。
+pub fn mic_energy_ratio(share: &SourceShare) -> f32 {
+    let total = share.mic + share.loopback;
+    if total <= 1e-9 {
+        return 0.0;
     }
+    (share.mic / total) as f32
 }
 
 /* ==========================================================================
@@ -908,7 +897,7 @@ fn run_asr_worker(
             }
 
             // ---------- 定稿 ----------
-            AsrJob::Final { utt_id, samples, start_ms, end_ms, share } => {
+            AsrJob::Final { utt_id, samples, start_ms, end_ms, share: _ } => {
                 hb.reset();
                 committed_now.clear();
                 current_utt = None;
@@ -986,11 +975,6 @@ fn run_asr_worker(
                     );
                 }
 
-                let speaker = match cfg.single_source {
-                    Some(kind) => speaker_for_single_source(Some(kind)),
-                    None => share.speaker(),
-                };
-
                 let segment = {
                     let mut s = session.lock();
                     let id = s.next_id();
@@ -999,7 +983,6 @@ fn run_asr_worker(
                         text: text.clone(),
                         start_ms,
                         end_ms: end_ms.max(start_ms + 1),
-                        speaker,
                         confidence: None,
                         suspect,
                     };
@@ -1102,6 +1085,7 @@ pub async fn summarize_once(
         let live = s.recent_transcript(now_ms(), settings.live_window_secs);
         let max_chars = settings.max_context_chars as usize;
         let messages = prompts::build_incremental_messages(
+            prompts::SummaryMode::parse(&settings.summary_mode),
             &s.title,
             &s.summary.overview,
             &s.summary.summary,
@@ -1232,6 +1216,9 @@ pub async fn summarize_once(
 /// 直接 spawn 会 panic（`there is no reactor running`）。把调度权交给调用方，
 /// 既避免了这个坑，也让 pipeline 不必依赖 Tauri（测试里可以用自己的运行时）。
 /// 循环本身通过 `stop` 标志退出，因此不需要调用方持有 JoinHandle。
+/// 一次总结失败后，多久重试（比正常间隔短，让失败尽快被消化）
+const RETRY_AFTER_FAILURE_SECS: u64 = 5;
+
 pub async fn summary_loop(
     client: Arc<AiClient>,
     settings: AiSettings,
@@ -1280,7 +1267,13 @@ pub async fn summary_loop(
 
             last_run = Instant::now();
             if let Err(e) = summarize_once(&client, &settings, &session, &emitter, forced).await {
-                tracing::warn!("自动总结失败：{e}");
+                // 失败时**不推进 covered_until_ms**（由 summarize_once 保证），
+                // 这一段内容下一轮还会重新送进去 —— 漏掉的纪要补不回来，
+                // 所以这里宁可重试，也不许「跳过就当做过」。
+                tracing::warn!("自动总结失败，稍后重试：{e}");
+                // 缩短下一轮的等待，让失败尽快被消化掉
+                last_run = Instant::now() - Duration::from_secs(settings.interval_secs as u64)
+                    + Duration::from_secs(RETRY_AFTER_FAILURE_SECS);
             }
         }
 }
@@ -1838,40 +1831,28 @@ mod tests {
         assert!(q.pop().is_none());
     }
 
-    /* ------------------------------ 说话人归属 ------------------------------ */
+    /* ------------------------------ 声源能量占比 ------------------------------ */
 
     #[test]
-    fn speaker_attribution_by_energy_share() {
+    fn source_energy_ratio_is_diagnostic_only() {
+        // 应用不再判断「谁在说话」，只保留能量占比用于诊断
         let e = |rms: f32| FrameEnergy { rms, peak: rms, db: 0.0 };
 
         let mut only_mic = SourceShare::default();
         only_mic.add_frame(SourceKind::Microphone, e(0.5));
-        assert_eq!(only_mic.speaker(), Speaker::Me);
+        assert!((mic_energy_ratio(&only_mic) - 1.0).abs() < 1e-6);
 
         let mut only_loop = SourceShare::default();
         only_loop.add_frame(SourceKind::Loopback, e(0.5));
-        assert_eq!(only_loop.speaker(), Speaker::Others);
+        assert!(mic_energy_ratio(&only_loop).abs() < 1e-6);
 
         let mut both = SourceShare::default();
         both.add_frame(SourceKind::Microphone, e(0.5));
         both.add_frame(SourceKind::Loopback, e(0.5));
-        assert_eq!(both.speaker(), Speaker::Mixed);
+        assert!((mic_energy_ratio(&both) - 0.5).abs() < 1e-3);
 
-        // 麦克风明显占优 → 我
-        let mut mic_dominant = SourceShare::default();
-        mic_dominant.add_frame(SourceKind::Microphone, e(1.0));
-        mic_dominant.add_frame(SourceKind::Loopback, e(0.2));
-        assert_eq!(mic_dominant.speaker(), Speaker::Me);
-
-        // 全程静音 → 未知
-        assert_eq!(SourceShare::default().speaker(), Speaker::Unknown);
-    }
-
-    #[test]
-    fn single_source_speaker_mapping() {
-        assert_eq!(speaker_for_single_source(Some(SourceKind::Microphone)), Speaker::Me);
-        assert_eq!(speaker_for_single_source(Some(SourceKind::Loopback)), Speaker::Others);
-        assert_eq!(speaker_for_single_source(None), Speaker::Unknown);
+        // 全程静音不除零
+        assert_eq!(mic_energy_ratio(&SourceShare::default()), 0.0);
     }
 
     #[test]

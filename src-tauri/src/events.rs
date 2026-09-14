@@ -223,7 +223,6 @@ impl Emitter for CollectingEmitter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::Speaker;
 
     #[test]
     fn event_names_match_frontend_contract() {
@@ -282,7 +281,6 @@ mod tests {
                     text: "测试".into(),
                     start_ms: 100,
                     end_ms: 900,
-                    speaker: Speaker::Others,
                     suspect: None,
                     confidence: Some(0.9),
                 },
@@ -290,7 +288,12 @@ mod tests {
         );
         let p = &c.payloads(event::SEGMENT)[0];
         assert_eq!(p["segment"]["id"], 7);
-        assert_eq!(p["segment"]["speaker"], "others");
+        // 应用不区分说话人：字段必须彻底消失，避免前端还留着「我/对方」的痕迹
+        assert!(
+            p["segment"].get("speaker").is_none(),
+            "转写段不应再带 speaker 字段：{}",
+            p["segment"]
+        );
         assert_eq!(p["segment"]["startMs"], 100);
         assert_eq!(p["segment"]["endMs"], 900);
     }

@@ -174,6 +174,67 @@ h4 {
   position: relative;
 }
 
+/* ---------------------------------------------------------------------------
+ * 会议面板：转写 + 纪要共用一个容器和一个头部。
+ * 两块内容属于同一场会议，分开成两个互不相干的框会让人以为纪要是「另一个东西」。
+ * ------------------------------------------------------------------------- */
+.meeting-panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.mp-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.875rem;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-2);
+}
+.mp-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+  flex: 1;
+}
+.mp-title h2 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mp-right {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.mp-mode {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.mp-mode-select {
+  width: auto;
+  min-width: 7rem;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.75rem;
+}
+
+.mp-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
 .boot {
   flex: 1;
   display: flex;

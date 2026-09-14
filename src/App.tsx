@@ -79,14 +79,22 @@ export default function App() {
           const same = st.asrState === e.state && st.asrMessage === e.message;
           if (!same) st.setAsrState(e.state, e.message);
           if (st.session && st.session.id === e.sessionId) {
-            const status =
-              e.state === "paused"
-                ? "paused"
-                : e.state === "error"
-                  ? "error"
-                  : e.state === "idle"
-                    ? "finished"
-                    : "recording";
+            // idle 是「已经收尾」的信号。它可能来自手动停止，也可能来自
+            // 后端的自动停止（音频设备挂掉时不让用户继续录一片空白）。
+            // 后者不会再走 stopRecording()，所以这里必须自己把状态收干净。
+            if (e.state === "idle") {
+              const id = st.session.id;
+              st.setSession(null);
+              st.setLastSessionId(id);
+              void api.getSession(id).then((d) => {
+                useStore.getState().setLastDetail(d);
+                useStore.getState().setSegments(d.segments);
+                useStore.getState().setSummary(d.summary);
+              }).catch(() => {});
+              usePartialStore.getState().apply(null);
+              return;
+            }
+            const status = e.state === "paused" ? "paused" : e.state === "error" ? "error" : "recording";
             if (st.session.status !== status) {
               st.patchSession({ status });
             }

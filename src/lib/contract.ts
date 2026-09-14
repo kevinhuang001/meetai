@@ -69,10 +69,25 @@ export interface AiProvider {
   extraHeaders: [string, string][];
 }
 
+/** 纪要模式：会议抓决定与待办，讲座抓知识点与脉络 */
+export type SummaryMode = "meeting" | "lecture";
+
+export const SUMMARY_MODES: { value: SummaryMode; label: string }[] = [
+  { value: "meeting", label: "会议" },
+  { value: "lecture", label: "讲座 / 课程" },
+];
+
+export const SUMMARY_MODE_DESC: Record<SummaryMode, string> = {
+  meeting: "抓结论、已达成的决定与待办（含负责人与截止时间）",
+  lecture: "抓知识点、概念定义、讲者强调的重点与课后要复习的点",
+};
+
 export interface AiSettings {
   enabled: boolean;
   providers: AiProvider[];
   activeProviderId: string;
+  /** 纪要模式：会议 / 讲座（两者提示词不同） */
+  summaryMode: SummaryMode;
   /** 录音过程中自动滚动总结 */
   autoSummary: boolean;
   /** 自动总结间隔（秒） */
@@ -166,15 +181,11 @@ export interface AudioSourceInfo {
  * 4. 转写与纪要
  * ========================================================================== */
 
-/** 说话人归属：混合采集时按各声源能量占比自动判定 */
-export type Speaker = "me" | "others" | "mixed" | "unknown";
-
 export interface TranscriptSegment {
   id: number;
   text: string;
   startMs: number;
   endMs: number;
-  speaker: Speaker;
   confidence: number | null;
   /**
    * 这段结果为什么可疑（幻听 / 重复输出 / 服务没返回内容）。
@@ -405,13 +416,6 @@ export interface AppErrorEvent {
 /* ============================================================================
  * 7. 工具
  * ========================================================================== */
-
-export const SPEAKER_LABEL: Record<Speaker, string> = {
-  me: "我",
-  others: "对方",
-  mixed: "双方",
-  unknown: "未知",
-};
 
 export function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return "0 B";

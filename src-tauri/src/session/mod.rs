@@ -17,27 +17,6 @@ use crate::util::{format_clock, now_ms, sanitize_filename};
  * 数据模型（与 src/lib/contract.ts 一一对应）
  * ========================================================================== */
 
-/// 说话人归属。双路采集（麦克风 + 系统内录）时按各声源能量占比自动判定。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Speaker {
-    Me,
-    Others,
-    Mixed,
-    Unknown,
-}
-
-impl Speaker {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Speaker::Me => "我",
-            Speaker::Others => "对方",
-            Speaker::Mixed => "双方",
-            Speaker::Unknown => "未知",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptSegment {
@@ -45,7 +24,6 @@ pub struct TranscriptSegment {
     pub text: String,
     pub start_ms: i64,
     pub end_ms: i64,
-    pub speaker: Speaker,
     pub confidence: Option<f32>,
     /// 这段结果为什么可疑（幻听/重复/服务没返回内容）。
     ///
@@ -262,12 +240,7 @@ impl Session {
             if seg.end_ms <= from_ms || seg.start_ms > to_ms {
                 continue;
             }
-            out.push_str(&format!(
-                "[{}] {}：{}\n",
-                format_clock(seg.start_ms),
-                seg.speaker.label(),
-                seg.text
-            ));
+            out.push_str(&format!("[{}] {}\n", format_clock(seg.start_ms), seg.text));
         }
         out
     }
@@ -283,12 +256,7 @@ impl Session {
             if seg.suspect.is_some() || seg.end_ms <= from_ms || seg.start_ms > to_ms {
                 continue;
             }
-            out.push_str(&format!(
-                "[{}] {}：{}\n",
-                format_clock(seg.start_ms),
-                seg.speaker.label(),
-                seg.text
-            ));
+            out.push_str(&format!("[{}] {}\n", format_clock(seg.start_ms), seg.text));
         }
         out
     }
@@ -298,12 +266,7 @@ impl Session {
     pub fn full_transcript(&self, max_chars: usize) -> String {
         let mut out = String::new();
         for seg in self.segments.iter().filter(|s| s.suspect.is_none()) {
-            out.push_str(&format!(
-                "[{}] {}：{}\n",
-                format_clock(seg.start_ms),
-                seg.speaker.label(),
-                seg.text
-            ));
+            out.push_str(&format!("[{}] {}\n", format_clock(seg.start_ms), seg.text));
         }
         crate::util::truncate_middle(out.trim(), max_chars)
     }
@@ -588,9 +551,8 @@ fn render_markdown(s: &Session) -> String {
     } else {
         for seg in &s.segments {
             out.push_str(&format!(
-                "**[{}] {}**：{}\n\n",
+                "**[{}]** {}\n\n",
                 format_clock(seg.start_ms),
-                seg.speaker.label(),
                 seg.text
             ));
         }
@@ -607,12 +569,7 @@ fn render_text(s: &Session) -> String {
         format_clock(s.duration_ms)
     ));
     for seg in &s.segments {
-        out.push_str(&format!(
-            "[{}] {}：{}\n",
-            format_clock(seg.start_ms),
-            seg.speaker.label(),
-            seg.text
-        ));
+        out.push_str(&format!("[{}] {}\n", format_clock(seg.start_ms), seg.text));
     }
     out
 }
@@ -635,7 +592,7 @@ fn render_srt(s: &Session) -> String {
             srt_timestamp(seg.start_ms),
             srt_timestamp(seg.end_ms.max(seg.start_ms + 200))
         ));
-        out.push_str(&format!("{}：{}\n\n", seg.speaker.label(), seg.text));
+        out.push_str(&format!("{}\n\n", seg.text));
     }
     out
 }
@@ -679,7 +636,6 @@ mod tests {
             text: "我们先过一下三季度的增长情况。".into(),
             start_ms: 1_200,
             end_ms: 4_500,
-            speaker: Speaker::Me,
             confidence: Some(0.92),
             suspect: None,
         });
@@ -688,7 +644,6 @@ mod tests {
             text: "流失率上升了两个百分点，主要在中小客户。".into(),
             start_ms: 5_000,
             end_ms: 9_800,
-            speaker: Speaker::Others,
             confidence: Some(0.88),
             suspect: None,
         });
@@ -705,13 +660,6 @@ mod tests {
     }
 
     #[test]
-    fn speaker_labels_are_chinese() {
-        assert_eq!(Speaker::Me.label(), "我");
-        assert_eq!(Speaker::Others.label(), "对方");
-        assert_eq!(Speaker::Mixed.label(), "双方");
-        assert_eq!(Speaker::Unknown.label(), "未知");
-    }
-
     #[test]
     fn segment_ids_are_monotonic_and_stats_accumulate() {
         let mut s = Session::default();
@@ -720,7 +668,6 @@ mod tests {
             text: "一二三".into(),
             start_ms: 0,
             end_ms: 1_000,
-            speaker: Speaker::Me,
             confidence: None,
             suspect: None,
         });
@@ -729,7 +676,6 @@ mod tests {
             text: "四五".into(),
             start_ms: 1_000,
             end_ms: 2_500,
-            speaker: Speaker::Others,
             confidence: None,
             suspect: None,
         });
@@ -762,7 +708,6 @@ mod tests {
         let loaded = store.load(&s.id).unwrap();
         assert_eq!(loaded.title, "产品周会");
         assert_eq!(loaded.segments.len(), 2);
-        assert_eq!(loaded.segments[0].speaker, Speaker::Me);
         assert_eq!(loaded.summary.action_items[0].owner, "张三");
         assert_eq!(loaded.stats.chars, s.stats.chars);
         let _ = std::fs::remove_dir_all(dir);
@@ -838,7 +783,7 @@ mod tests {
         assert!(md.contains("## 待办事项"));
         assert!(md.contains("| 输出埋点方案 | 张三 | 下周三 |"));
         assert!(md.contains("## 完整转写"));
-        assert!(md.contains("**[00:00:01] 我**：我们先过一下三季度的增长情况。"));
+        assert!(md.contains("**[00:00:01]** 我们先过一下三季度的增长情况。"));
         assert!(md.contains("系统声音（扬声器）"));
     }
 
@@ -847,7 +792,7 @@ mod tests {
         let s = sample_session();
         let srt = render_export(&s, ExportFormat::Srt).unwrap();
         assert!(srt.starts_with("1\n00:00:01,200 --> 00:00:04,500\n"));
-        assert!(srt.contains("我：我们先过一下三季度的增长情况。"));
+        assert!(srt.contains("我们先过一下三季度的增长情况。"));
         assert!(srt.contains("2\n00:00:05,000 --> 00:00:09,800"));
     }
 
@@ -861,7 +806,7 @@ mod tests {
     fn text_export_is_plain() {
         let s = sample_session();
         let txt = render_export(&s, ExportFormat::Text).unwrap();
-        assert!(txt.contains("[00:00:01] 我："));
+        assert!(txt.contains("[00:00:01] 我们先过一下三季度的增长情况。"));
         assert!(!txt.contains("##"));
     }
 
@@ -905,7 +850,6 @@ mod tests {
             text: "我们先过一下三季度的增长情况。".into(),
             start_ms: 0,
             end_ms: 3_000,
-            speaker: Speaker::Me,
             confidence: None,
             suspect: None,
         });
@@ -914,7 +858,6 @@ mod tests {
             text: "Thank you for watching!".into(),
             start_ms: 3_000,
             end_ms: 5_000,
-            speaker: Speaker::Others,
             confidence: None,
             suspect: Some("疑似模型幻听短语".into()),
         });
@@ -960,11 +903,11 @@ mod tests {
     }
 
     #[test]
-    fn full_transcript_includes_timestamps_and_speakers() {
+    fn full_transcript_includes_timestamps() {
         let s = sample_session();
         let t = s.full_transcript(10_000);
-        assert!(t.contains("[00:00:01] 我："));
-        assert!(t.contains("[00:00:05] 对方："));
+        assert!(t.contains("[00:00:01] 我们先过一下三季度的增长情况。"));
+        assert!(t.contains("[00:00:05] 流失率上升了两个百分点"));
     }
 
     #[test]

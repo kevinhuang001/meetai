@@ -373,30 +373,54 @@ pub fn start_session(
     let info = session.lock().info(now_ms());
     *state.active.lock() = Some(pipeline);
 
-    // 采集线程的异步错误转发到前端
+    // 采集线程的错误：**立刻停止录音**。
+    //
+    // 声源线程一旦退出（设备被拔掉、被别的程序独占、PulseAudio 掉线…），
+    // 后面再录下去只会得到一片寂静，而用户看到的是一份「还在录、但没有内容」
+    // 的会议 —— 比直接报错糟糕得多。这里报错并收尾，把已经录到的部分存好。
     {
         let emitter = emitter.clone();
         let session_id = info.id.clone();
+        let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            loop {
+            // 只有第一条错误才触发停止；后面的重复报错直接丢弃
+            let first = loop {
                 match err_rx.recv_timeout(Duration::from_millis(500)) {
-                    Ok(msg) => crate::events::emit(
-                        &emitter,
-                        event::ERROR,
-                        &crate::events::AppErrorEvent {
-                            scope: "audio".into(),
-                            message: msg,
-                        },
-                    ),
+                    Ok(msg) => break Some(msg),
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
-                    Err(_) => break,
+                    Err(_) => break None, // 采集线程全部退出且没有报错（正常停止）
                 }
+            };
+            let Some(msg) = first else { return };
+
+            crate::events::emit(
+                &emitter,
+                event::ERROR,
+                &crate::events::AppErrorEvent {
+                    scope: "audio".into(),
+                    message: format!("{msg}；已自动停止录音，避免继续录到空白内容"),
+                },
+            );
+
+            // 这里也可能被手动停止抢先，失败属正常
+            match stop_active_session(app).await {
+                Ok(detail) => {
+                    crate::events::emit(
+                        &emitter,
+                        event::STATE,
+                        &crate::events::AsrStateEvent {
+                            session_id: detail.id.clone(),
+                            state: crate::events::AsrStateKind::Idle,
+                            message: Some(format!("音频采集中断，已停止录音并保存（{} 条转写）", detail.segments.len())),
+                        },
+                    );
+                }
+                Err(e) => tracing::warn!("音频故障后自动停止失败：{e}"),
             }
-            let _ = session_id;
+            let _ = &session_id;
         });
     }
 
-    let _ = app;
     Ok(info)
 }
 
@@ -450,6 +474,11 @@ pub fn resume_session(state: State<'_, AppState>) -> AppResult<SessionInfo> {
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn stop_session(app: AppHandle) -> AppResult<SessionDetail> {
+    stop_active_session(app).await
+}
+
+/// 停止当前录音并落盘（手动停止与「音频故障自动停止」共用）
+async fn stop_active_session(app: AppHandle) -> AppResult<SessionDetail> {
     // 先把 pipeline 从状态里取出来（不跨 await 持锁）
     let pipeline = {
         let state = app.state::<AppState>();

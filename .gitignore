@@ -20,3 +20,4 @@ recordings/
 .idea
 .vscode/*
 !.vscode/extensions.json
+artifacts/99-failure.png

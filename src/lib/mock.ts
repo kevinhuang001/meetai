@@ -32,7 +32,6 @@ import {
   type SessionListItem,
   type SessionUpdatedEvent,
   type Settings,
-  type Speaker,
   type StartSessionRequest,
   type SummaryState,
   type TranscriptSegment,
@@ -358,6 +357,7 @@ function defaultSettings(): Settings {
       enabled: true,
       providers: [defaultProvider("deepseek")],
       activeProviderId: "deepseek",
+      summaryMode: "meeting",
       autoSummary: true,
       intervalSecs: 20,
       minNewChars: 60,
@@ -401,23 +401,23 @@ const APP_INFO: AppInfo = {
 /* ------------------------------- 会话模拟 ------------------------------- */
 
 /** 一段像真实会议的中文对话，用于驱动 UI */
-const SCRIPT: { text: string; speaker: Speaker; suspect?: string }[] = [
-  { text: "各位，我们今天主要过三件事：上季度的增长复盘、下季度的目标，还有新版本的上线节奏。", speaker: "me" },
-  { text: "我先说复盘。三季度整体营收环比增长了百分之十八，主要来自企业版订阅。", speaker: "me" },
-  { text: "不过客户流失率也比二季度高了两个点，我觉得这块需要单独看一下。", speaker: "others" },
+const SCRIPT: { text: string; suspect?: string }[] = [
+  { text: "各位，我们今天主要过三件事：上季度的增长复盘、下季度的目标，还有新版本的上线节奏。" },
+  { text: "我先说复盘。三季度整体营收环比增长了百分之十八，主要来自企业版订阅。" },
+  { text: "不过客户流失率也比二季度高了两个点，我觉得这块需要单独看一下。" },
   // 演示「可疑但照常显示」：识别服务确实返回了内容，只是看起来不对。
   // 它会标灰、不进纪要，但**不会被丢掉** —— 否则用户只会看到一个空白界面。
-  { text: "Thank you for watching!", speaker: "others", suspect: "疑似模型幻听短语" },
-  { text: "对，流失主要集中在中小客户，原因统计里排第一的是上手成本太高。", speaker: "others" },
-  { text: "那下季度的目标我建议定在环比增长百分之十五，把留存放在更重要的位置。", speaker: "me" },
-  { text: "同意。另外新版本我们计划十一月十号发灰度，十一月二十四号全量。", speaker: "others" },
-  { text: "这个节奏可以，但前提是引导流程的重构要在十月底之前完成。", speaker: "me" },
-  { text: "我来负责引导流程，十月二十八号之前给到可测试的版本。", speaker: "others" },
-  { text: "好，那数据和埋点方案谁来出？这个直接影响我们怎么衡量留存改善。", speaker: "me" },
-  { text: "数据这边我来跟，下周三之前把指标口径和看板初稿发出来。", speaker: "others" },
-  { text: "另外提醒一下，市场侧的预算审批还没走完，可能会影响十一月的投放。", speaker: "others" },
-  { text: "这个风险记一下，我明天去找财务确认审批进度。", speaker: "me" },
-  { text: "如果没有别的问题，今天就到这里，辛苦大家。", speaker: "me" },
+  { text: "Thank you for watching!", suspect: "疑似模型幻听短语" },
+  { text: "对，流失主要集中在中小客户，原因统计里排第一的是上手成本太高。" },
+  { text: "那下季度的目标我建议定在环比增长百分之十五，把留存放在更重要的位置。" },
+  { text: "同意。另外新版本我们计划十一月十号发灰度，十一月二十四号全量。" },
+  { text: "这个节奏可以，但前提是引导流程的重构要在十月底之前完成。" },
+  { text: "我来负责引导流程，十月二十八号之前给到可测试的版本。" },
+  { text: "好，那数据和埋点方案谁来出？这个直接影响我们怎么衡量留存改善。" },
+  { text: "数据这边我来跟，下周三之前把指标口径和看板初稿发出来。" },
+  { text: "另外提醒一下，市场侧的预算审批还没走完，可能会影响十一月的投放。" },
+  { text: "这个风险记一下，我明天去找财务确认审批进度。" },
+  { text: "如果没有别的问题，今天就到这里，辛苦大家。" },
 ];
 
 let seq = 0;
@@ -631,7 +631,6 @@ function startStreaming(s: MockSession) {
         text: line.text,
         startMs,
         endMs,
-        speaker: line.speaker,
         confidence: 0.88 + Math.random() * 0.1,
         suspect: line.suspect ?? null,
       };

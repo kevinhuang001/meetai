@@ -18,6 +18,13 @@ use crate::settings::AiProvider;
 use crate::util::truncate_chars;
 
 const USER_AGENT: &str = concat!("MeetingHear/", env!("CARGO_PKG_VERSION"));
+/// 单次请求最多尝试几次（含首次）。模型「处理不过来」时全靠它兜住。
+const MAX_ATTEMPTS: u32 = 4;
+/// 指数退避：1s → 2s → 4s，最长等 8 秒
+pub fn backoff_delay(attempt: u32) -> Duration {
+    let secs = 1u64 << (attempt.saturating_sub(1).min(3));
+    Duration::from_secs(secs.min(8))
+}
 
 /* ==========================================================================
  * 数据类型
@@ -82,6 +89,7 @@ pub struct ConnectionTest {
  * 内部错误
  * ========================================================================== */
 
+#[derive(Debug)]
 enum ChatError {
     /// HTTP 层错误（非 2xx）
     Status { code: u16, message: String, raw: String },
@@ -210,10 +218,18 @@ impl AiClient {
                         json_degraded = true;
                         continue;
                     }
-                    // 限流 / 5xx / 网络抖动 → 退避重试一次
-                    if attempt <= 2 && err.is_retryable() {
-                        tracing::warn!("AI 请求失败，1.5 秒后重试一次");
-                        tokio::time::sleep(Duration::from_millis(1_500)).await;
+                    // 限流 / 5xx / 超时 / 网络抖动 → 指数退避重试。
+                    //
+                    // 本地小模型（Ollama 等）在会议进行中很容易被压住而超时，
+                    // 这种失败几乎都能靠重试消化掉。**重试比丢内容重要得多**：
+                    // 漏掉的那一段会直接消失在纪要里，而多等几秒没人会注意到。
+                    if attempt <= MAX_ATTEMPTS && err.is_retryable() {
+                        let wait = backoff_delay(attempt);
+                        tracing::warn!(
+                            "AI 请求失败（第 {attempt}/{MAX_ATTEMPTS} 次），{} 秒后重试：{err:?}",
+                            wait.as_secs_f32()
+                        );
+                        tokio::time::sleep(wait).await;
                         continue;
                     }
                     return Err(err.to_app_error());

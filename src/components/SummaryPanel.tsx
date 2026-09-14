@@ -1,6 +1,7 @@
 /** 右侧「AI 实时纪要」面板：录制视图与会话详情视图共用 */
 import { useMemo, useState } from "react";
 import type { SummaryState } from "../lib/contract";
+import { formatClock } from "../lib/contract";
 import { formatTimeOfDay } from "../lib/util";
 import { Badge, Button } from "./ui";
 import { IconChevron, IconSparkle } from "./icons";
@@ -16,6 +17,15 @@ export interface SummaryPanelProps {
   onSummarizeNow: () => void;
   onOpenAiSettings: () => void;
   busy?: boolean;
+  /**
+   * 由外层统一控制折叠。
+   * 录制视图里纪要和转写是**同一个面板**，折叠按钮应当长在共享头部上，
+   * 而不是每块各长一个（用户会分不清哪个管哪块）。
+   */
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  /** 外层已有共享头部时置 false，避免出现两个标题栏 */
+  showHeader?: boolean;
 }
 
 function ThinkingSkeleton() {
@@ -66,8 +76,16 @@ export function SummaryPanel({
   onSummarizeNow,
   onOpenAiSettings,
   busy = false,
+  collapsed: collapsedProp,
+  onToggleCollapse,
+  showHeader = true,
 }: SummaryPanelProps) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsedLocal, setCollapsedLocal] = useState(false);
+  const collapsed = collapsedProp ?? collapsedLocal;
+  const setCollapsed = (v: boolean) => {
+    if (onToggleCollapse) onToggleCollapse();
+    else setCollapsedLocal(v);
+  };
   const [checked, setChecked] = useState<Record<string, boolean>>({});
 
   const lagSecs = useMemo(() => {
@@ -76,10 +94,12 @@ export function SummaryPanel({
   }, [latestEndMs, summary.coveredUntilMs]);
 
   const thinking = aiStatus === "thinking";
+  // 让人一眼看出纪要覆盖的是「已经过去的那一段」，而不是实时字幕
+  const covered = summary.coveredUntilMs > 0 ? formatClock(summary.coveredUntilMs) : "";
 
   if (collapsed) {
     return (
-      <aside className="summary-panel collapsed" data-testid="summary-panel" aria-label="AI 实时纪要">
+      <aside className="summary-panel collapsed" data-testid="summary-panel" aria-label="会议纪要">
         <button
           className="icon-btn collapse-btn"
           aria-label="展开 AI 纪要面板"
@@ -94,28 +114,31 @@ export function SummaryPanel({
   }
 
   return (
-    <aside className="summary-panel" data-testid="summary-panel" aria-label="AI 实时纪要">
-      <header className="panel-head">
-        <h2>AI 实时纪要</h2>
-        <div className="panel-head-right">
-          {summary.model ? <span className="dim tiny mono">{summary.model}</span> : null}
-          <button
-            className="icon-btn"
-            aria-label="折叠 AI 纪要面板"
-            title="折叠"
-            onClick={() => setCollapsed(true)}
-          >
-            <IconChevron dir="right" />
-          </button>
-        </div>
-      </header>
+    <aside className="summary-panel" data-testid="summary-panel" aria-label="会议纪要">
+      {showHeader ? (
+        <header className="panel-head">
+          <h2>会议纪要</h2>
+          <div className="panel-head-right">
+            {covered ? <span className="dim tiny" data-testid="summary-covered">已总结至 {covered}</span> : null}
+            {summary.model ? <span className="dim tiny mono">{summary.model}</span> : null}
+            <button
+              className="icon-btn"
+              aria-label="折叠纪要"
+              title="折叠"
+              onClick={() => setCollapsed(true)}
+            >
+              <IconChevron dir="right" />
+            </button>
+          </div>
+        </header>
+      ) : null}
 
       {!ready ? (
         <div className="panel-scroll">
           <div className="empty-card" data-testid="summary-not-configured">
             <div className="empty-icon"><IconSparkle size={30} /></div>
             <h4>未配置 AI 接口</h4>
-            <p>{notReadyReason || "配置后这里会实时生成会议纪要。"}</p>
+            <p>{notReadyReason || "配置后这里会滚动生成会议纪要。"}</p>
             <Button variant="primary" onClick={onOpenAiSettings} testId="summary-open-ai-settings">
               去配置 AI 接口
             </Button>
@@ -133,7 +156,7 @@ export function SummaryPanel({
 
             <section className="live-card" data-testid="summary-live-card">
               <div className="live-head">
-                <span className="live-title">刚刚说到</span>
+                <span className="live-title">最近一段</span>
                 {thinking ? (
                   <span className="thinking-dot">
                     <i />
@@ -146,7 +169,7 @@ export function SummaryPanel({
                 <ThinkingSkeleton />
               ) : (
                 <p className="live-text" data-testid="summary-live">
-                  {summary.live || "开始说话后这里会实时更新。"}
+                  {summary.live || "开始说话后，这里会回顾最近这一段说了什么。"}
                 </p>
               )}
             </section>

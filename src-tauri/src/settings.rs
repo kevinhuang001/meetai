@@ -316,6 +316,10 @@ pub struct AiSettings {
     pub enabled: bool,
     pub providers: Vec<AiProvider>,
     pub active_provider_id: String,
+    /// 纪要模式：`meeting`（会议）或 `lecture`（讲座 / 课程）。
+    /// 两种场景要抓的东西完全不同 —— 会议要决定与待办，讲座要知识点与脉络，
+    /// 所以提示词分开写，而不是用一套通用提示糊过去。
+    pub summary_mode: String,
     pub auto_summary: bool,
     pub interval_secs: u32,
     pub min_new_chars: u32,
@@ -331,6 +335,7 @@ impl Default for AiSettings {
             enabled: true,
             active_provider_id: providers[0].id.clone(),
             providers,
+            summary_mode: "meeting".into(),
             auto_summary: true,
             interval_secs: 20,
             min_new_chars: 60,
@@ -355,6 +360,9 @@ impl AiSettings {
     }
 
     pub fn sanitize(&mut self) {
+        if !matches!(self.summary_mode.as_str(), "meeting" | "lecture") {
+            self.summary_mode = "meeting".into();
+        }
         self.interval_secs = self.interval_secs.clamp(5, 600);
         self.min_new_chars = self.min_new_chars.clamp(0, 5_000);
         self.live_window_secs = self.live_window_secs.clamp(20, 600);

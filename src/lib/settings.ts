@@ -73,3 +73,25 @@ export function asrServiceLabel(settings: Settings | null): string {
   if (!p) return "未配置识别服务";
   return p.model.trim() ? `${p.name} · ${p.model}` : p.name;
 }
+
+/**
+ * 改一项设置并立刻落盘。
+ *
+ * 主界面上的快捷设置（比如录音时切「会议 / 讲座」模式）不该逼用户
+ * 先打开设置对话框再点保存 —— 那样这个开关就没人会用。
+ */
+export async function patchAndSaveSettings(patch: Partial<Settings>): Promise<Settings | null> {
+  const { api } = await import("./api");
+  const { useStore } = await import("../store");
+  const current = useStore.getState().settings;
+  if (!current) return null;
+  const next: Settings = { ...current, ...patch };
+  try {
+    const saved = await api.saveSettings(next);
+    useStore.getState().setSettings(saved);
+    return saved;
+  } catch (e) {
+    useStore.getState().toast("error", "保存设置", String(e));
+    return null;
+  }
+}
