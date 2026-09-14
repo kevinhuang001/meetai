@@ -2,12 +2,10 @@
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import {
-  LANGUAGE_OPTIONS,
   type AsrConnectionTestResult,
   type AsrPreset,
   type AsrProvider,
   type AsrSettings,
-  type LanguageCode,
 } from "../../lib/contract";
 import { guard, useStore } from "../../store";
 import { Badge, Button, Field, Select, Slider, SwitchRow } from "../ui";
@@ -129,7 +127,13 @@ export function AsrTab({ draft, set }: TabProps) {
         <span>转写通过 HTTP 调用你配置的服务商；没配好就无法开始录音。</span>
         <details className="notice-details">
           <summary>想完全离线？点开看自建服务的命令</summary>
-          <code className="notice-code">whisper-server -m ggml-large-v3-turbo.bin --port 8080</code>
+          <code className="notice-code">
+            whisper-server -m ggml-large-v3-turbo.bin --port 8080 --language auto
+          </code>
+          <span>
+            <strong>务必带上 --language auto</strong>：whisper-server 的默认语言是英文，不加这个参数，
+            中文语音会被按英文识别，只会得到一段英文乱码。识别语言归服务端管，应用不参与。
+          </span>
           <span>重启应用后在「服务商」里选「本地 whisper.cpp server」，Base URL 填 http://127.0.0.1:8080，路径 /inference。</span>
           <code className="notice-code">docker run -p 8000:8000 fedirz/faster-whisper-server</code>
           <span>或任何 OpenAI 兼容的 /audio/transcriptions 服务，Base URL 填对应地址即可。</span>
@@ -229,15 +233,6 @@ export function AsrTab({ draft, set }: TabProps) {
 
       <section className="card">
         <h3>识别参数</h3>
-        <Field label="识别语言" hint="auto 会在首句后自动检测并锁定">
-          <Select
-            value={asr.language}
-            options={LANGUAGE_OPTIONS.map((l) => ({ value: l.value, label: l.label }))}
-            onChange={(v) => patchAsr({ language: v as LanguageCode })}
-            ariaLabel="识别语言"
-            testId="asr-language"
-          />
-        </Field>
         <Field label="采样温度" hint="0 = 确定性输出，识别任务建议保持 0">
           <Slider
             value={asr.temperature}
@@ -256,13 +251,6 @@ export function AsrTab({ draft, set }: TabProps) {
           checked={asr.contextPrompt}
           onChange={(v) => patchAsr({ contextPrompt: v })}
           testId="asr-context-prompt"
-        />
-        <SwitchRow
-          label="翻译成英文"
-          hint="不输出原文，而是输出英文翻译（需要服务支持翻译接口）"
-          checked={asr.translateToEnglish}
-          onChange={(v) => patchAsr({ translateToEnglish: v })}
-          testId="asr-translate-english"
         />
       </section>
     </div>

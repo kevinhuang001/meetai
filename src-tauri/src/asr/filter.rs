@@ -1,7 +1,13 @@
-//! 识别结果的后处理：清洗文本 + 丢弃幻听与退化输出。
+//! 识别结果的后处理：清洗文本 + **标注**幻听与退化输出。
 //!
 //! 这些检查不依赖任何识别引擎的实现细节，只针对「输出文本本身」，
 //! 因此在换成任意 HTTP 识别服务后依然有效。
+//!
+//! **[重要] 这里只做标注，绝不丢弃。**
+//! 曾经的做法是把疑似幻听的整段结果直接丢掉，结果是：模型和语言不一致时
+//! （例如中文音频被按英文识别）服务返回了一段英文幻觉，被过滤器吃掉，
+//! 界面上一个字都没有 —— 用户完全不知道发生了什么，也无法自救。
+//! 现在的约定是：服务返回什么就展示什么，可疑的老实标出来，让用户自己判断。
 
 /// 已知的 Whisper 系模型在静音/纯音乐上会稳定输出的短语
 const HALLUCINATION_PHRASES: &[&str] = &[
@@ -43,19 +49,21 @@ pub fn clean_text(raw: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ").trim().to_string()
 }
 
-/// 判断一段结果是否应当丢弃。
+/// 判断一段结果为什么可疑；`None` 表示看起来正常。
 ///
-/// 判据（任一命中即丢弃）：
-///  1. 有效字符太少（空文本、只有标点）
-///  2. 全是已知幻听短语（短音频里）
+/// **[重要] 返回值只用于标注，调用方不得据此丢弃文本。**
+///
+/// 判据：
+///  1. 没有可用内容（空文本、只有标点）
+///  2. 短音频里整句都是已知幻听短语
 ///  3. 退化重复（整串是同一小段的重复，或句尾出现长片段重复）
-pub fn is_likely_hallucination(text: &str, audio_ms: i64) -> bool {
+pub fn suspect_reason(text: &str, audio_ms: i64) -> Option<&'static str> {
     let stripped: String = text
         .chars()
         .filter(|c| c.is_alphanumeric() || is_cjk(*c))
         .collect();
     if stripped.chars().count() < 2 {
-        return true;
+        return Some("没有识别出内容");
     }
 
     let lower = text.to_lowercase();
@@ -66,11 +74,19 @@ pub fn is_likely_hallucination(text: &str, audio_ms: i64) -> bool {
             .map(|p| p.chars().count())
             .sum();
         if phrase_chars > 0 && phrase_chars * 2 >= stripped.chars().count() {
-            return true;
+            return Some("疑似模型幻听短语");
         }
     }
 
-    is_degenerate_repetition(&stripped)
+    if is_degenerate_repetition(&stripped) {
+        return Some("疑似模型重复输出");
+    }
+    None
+}
+
+/// 这段文本是否可疑（供纪要等下游过滤使用）
+pub fn is_suspect(text: &str, audio_ms: i64) -> bool {
+    suspect_reason(text, audio_ms).is_some()
 }
 
 /// 检出「同一小段不停重复」的退化输出。
@@ -238,52 +254,63 @@ mod tests {
 
     #[test]
     fn hallucination_detected_on_short_audio() {
-        assert!(is_likely_hallucination("谢谢观看", 1_500));
-        assert!(is_likely_hallucination("谢谢大家观看，请不吝点赞订阅", 2_000));
-        assert!(is_likely_hallucination("Thank you for watching!", 1_000));
-        assert!(is_likely_hallucination("字幕由 Amara.org 社群提供", 2_500));
+        assert!(is_suspect("谢谢观看", 1_500));
+        assert!(is_suspect("谢谢大家观看，请不吝点赞订阅", 2_000));
+        assert!(is_suspect("Thank you for watching!", 1_000));
+        assert!(is_suspect("字幕由 Amara.org 社群提供", 2_500));
     }
 
     #[test]
     fn real_speech_is_not_flagged() {
-        assert!(!is_likely_hallucination("我们下季度目标定在环比增长百分之十五", 3_000));
-        assert!(!is_likely_hallucination("谢谢大家的支持是我们前进的动力", 4_000));
+        assert!(!is_suspect("我们下季度目标定在环比增长百分之十五", 3_000));
+        assert!(!is_suspect("谢谢大家的支持是我们前进的动力", 4_000));
     }
 
     #[test]
     fn long_audio_mentioning_thanks_is_kept() {
-        assert!(!is_likely_hallucination("谢谢观看", 20_000));
+        assert!(!is_suspect("谢谢观看", 20_000));
     }
 
     #[test]
     fn empty_and_punctuation_only_are_hallucinations() {
-        assert!(is_likely_hallucination("", 5_000));
-        assert!(is_likely_hallucination("。", 5_000));
-        assert!(is_likely_hallucination("   ", 5_000));
-        assert!(is_likely_hallucination("♪♪♪", 5_000));
+        assert!(is_suspect("", 5_000));
+        assert!(is_suspect("。", 5_000));
+        assert!(is_suspect("   ", 5_000));
+        assert!(is_suspect("♪♪♪", 5_000));
+    }
+
+    #[test]
+    fn suspect_result_is_flagged_not_deleted() {
+        // 这是本模块最重要的一条约定：可疑 ≠ 丢弃。
+        // 曾经把疑似幻听整段丢掉，导致「模型语言不匹配 → 界面一个字都没有」，
+        // 用户完全无从判断问题出在哪。
+        let text = "Thank you for watching!";
+        assert!(is_suspect(text, 1_000), "应当被标记为可疑");
+        assert_eq!(clean_text(text), text, "文本必须原样保留下来给用户看");
+        assert_eq!(suspect_reason(text, 1_000), Some("疑似模型幻听短语"));
     }
 
     #[test]
     fn degenerate_repetition_is_rejected() {
-        assert!(is_likely_hallucination("哈哈哈哈哈哈哈哈", 5_000));
-        assert!(is_likely_hallucination("一二三一二三一二三一二三", 5_000));
+        assert!(is_suspect("哈哈哈哈哈哈哈哈", 5_000));
+        assert!(is_suspect("一二三一二三一二三一二三", 5_000));
     }
 
     #[test]
     fn tail_loop_is_rejected() {
         let text = "aswhat you can do for your country as what you can do for your country";
-        assert!(is_likely_hallucination(text, 8_000), "尾部循环没有被识别：{text}");
+        assert!(is_suspect(text, 8_000), "尾部循环没有被识别：{text}");
         let text2 = "季度目标定在百分之十五百分之十五百分之十五";
-        assert!(is_likely_hallucination(text2, 8_000), "中文循环没有被识别：{text2}");
+        assert!(is_suspect(text2, 8_000), "中文循环没有被识别：{text2}");
     }
 
     #[test]
     fn normal_long_sentence_is_not_flagged_as_loop() {
         let text = "我们今天主要过三件事情第一是上季度的增长复盘第二是下季度的目标第三是新版本的上线节奏";
-        assert!(!is_likely_hallucination(text, 20_000));
-        assert!(!is_likely_hallucination("谢谢大家谢谢大家", 20_000));
+        assert!(!is_suspect(text, 20_000));
+        assert!(!is_suspect("谢谢大家谢谢大家", 20_000));
         // 同一个数字短语出现两次是正常表达
-        assert!(!is_likely_hallucination("季度目标定在环比增长百分之十五同比增长百分之十五", 20_000));
+        assert!(!is_suspect("季度目标定在环比增长百分之十五同比增长百分之十五", 20_000));
     }
 
     #[test]

@@ -17,6 +17,12 @@
 //! # 覆盖服务地址
 //! MEETINGHEAR_E2E_ASR_URL=http://127.0.0.1:9000 cargo test --test e2e_pipeline -- --ignored
 //! ```
+//!
+//! **语言必须由服务端配置。** 应用不发送 language 字段，所以 whisper.cpp server
+//! 要带 `--language auto` 启动（它默认是 `en`，中文会被按英文识别并输出英文幻觉）：
+//! ```bash
+//! ./build/bin/whisper-server -m models/ggml-base.bin --port 8090 --language auto
+//! ```
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -88,8 +94,6 @@ fn asr_settings(provider: &AsrProvider) -> AsrSettings {
         enabled: true,
         active_provider_id: provider.id.clone(),
         providers: vec![provider.clone()],
-        language: "auto".into(),
-        translate_to_english: false,
         context_prompt: true,
         temperature: 0.0,
         live_preview: false,
@@ -162,14 +166,12 @@ fn run_pipeline_on_audio(
         "E2E 测试会议".into(),
         SessionConfig {
             model_id: format!("{} · {}", provider.name, provider.model),
-            language: "auto".into(),
             enable_mic: false,
             enable_loopback: false,
             mic_label: None,
             loopback_label: None,
         },
     );
-    session.language = None;
     let session = Arc::new(parking_lot::Mutex::new(session));
 
     let emitter = CollectingEmitter::new();
@@ -422,7 +424,6 @@ fn e2e_asr_client_encodes_wav_and_parses_response() {
             &provider,
             &TranscribeRequest {
                 samples: clip,
-                language: None,
                 prompt: None,
                 temperature: 0.0,
             },
@@ -439,6 +440,107 @@ fn e2e_asr_client_encodes_wav_and_parses_response() {
     assert!(!out.text.trim().is_empty(), "识别结果为空");
     assert!(out.rtf() > 0.0, "实时率计算异常");
     assert_eq!(out.audio_ms, 5_000);
+}
+
+#[test]
+#[ignore = "需要真实识别服务 + 中文样本；用 --ignored 运行"]
+fn e2e_chinese_speech_is_transcribed_as_chinese() {
+    // 这条测试锁死一个真实事故：识别服务默认语言是英文时，中文语音会被
+    // 按英文硬识别，输出一段英文幻觉，用户看到的是「什么都识别不出来」。
+    // 应用的正确做法是**完全不碰语言**，由服务端配置决定（--language auto）。
+    let provider = asr_provider();
+    if !ensure_asr_service(&provider) {
+        return;
+    }
+    let fixture = audio_fixture("zh-sample.wav");
+    if !fixture.is_file() {
+        skip(
+            "缺少 zh-sample.wav。下载：
+  curl -o .e2e/audio/zh-sample.wav \
+    https://isv-data.oss-cn-hangzhou.aliyuncs.com/ics/MaaS/ASR/test_audio/asr_example_zh.wav",
+        );
+        return;
+    }
+
+    let samples = meeting_hear_lib::audio::decode::decode_to_16k_mono(&fixture).unwrap();
+    let client = AsrClient::new().unwrap();
+    let out = test_runtime()
+        .block_on(client.transcribe(
+            &provider,
+            &TranscribeRequest {
+                samples,
+                prompt: None,
+                temperature: 0.0,
+            },
+        ))
+        .expect("识别请求失败");
+
+    eprintln!("返回文本：{}", out.text);
+    let cjk = out
+        .text
+        .chars()
+        .filter(|c| matches!(*c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF))
+        .count();
+    assert!(
+        cjk >= 5,
+        "中文语音应当识别出中文文本，实际得到：{:?}（汉字 {cjk} 个）。\
+         如果这里是一段英文，说明识别服务的语言被固定成了 en —— \
+         请用 `whisper-server --language auto` 启动服务端。",
+        out.text
+    );
+}
+
+#[test]
+#[ignore = "需要真实识别服务 + 中文样本；用 --ignored 运行"]
+fn e2e_chinese_audio_flows_through_full_pipeline() {
+    // 用户视角的回归测试：中文音频走完「VAD 断句 → 识别 → 落段」，
+    // 界面上必须真的出现中文转写。
+    let provider = asr_provider();
+    if !ensure_asr_service(&provider) {
+        return;
+    }
+    let fixture = audio_fixture("zh-sample.wav");
+    if !fixture.is_file() {
+        skip("缺少 zh-sample.wav（下载方式见 e2e_chinese_speech_is_transcribed_as_chinese）");
+        return;
+    }
+
+    let samples = meeting_hear_lib::audio::decode::decode_to_16k_mono(&fixture).unwrap();
+    let (session, emitter) = run_pipeline_on_audio(
+        &provider,
+        &samples,
+        VadSettings::default(),
+        false,
+        None,
+    );
+
+    let s = session.lock();
+    for seg in &s.segments {
+        eprintln!(
+            "段 {} [{}ms] suspect={:?}：{}",
+            seg.id, seg.start_ms, seg.suspect, seg.text
+        );
+    }
+    assert!(!s.segments.is_empty(), "整段音频没有产生任何转写段落");
+    let all: String = s.segments.iter().map(|x| x.text.clone()).collect();
+    let cjk = all
+        .chars()
+        .filter(|c| matches!(*c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF))
+        .count();
+    assert!(
+        cjk >= 5,
+        "中文音频经过完整流水线后应得到中文文本，实际：{all:?}。\
+         若这里是英文，说明识别服务被固定成了 en（启动加 --language auto）。"
+    );
+    // 任何段都不允许被静默丢弃：要么有文本，要么明确标了原因
+    for seg in &s.segments {
+        assert!(
+            !seg.text.trim().is_empty() || seg.suspect.is_some(),
+            "出现了空文本且没有可疑标记的段落"
+        );
+    }
+    drop(s);
+    let _ = emitter;
 }
 
 #[test]

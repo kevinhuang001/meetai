@@ -49,7 +49,6 @@ pub struct AsrStateEvent {
     pub session_id: String,
     pub state: AsrStateKind,
     pub message: Option<String>,
-    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -245,7 +244,6 @@ mod tests {
             session_id: "s1".into(),
             state: AsrStateKind::Speech,
             message: None,
-            language: Some("zh".into()),
         };
         let v = serde_json::to_value(&e).unwrap();
         assert_eq!(v["state"], "speech");
@@ -285,7 +283,7 @@ mod tests {
                     start_ms: 100,
                     end_ms: 900,
                     speaker: Speaker::Others,
-                    language: Some("zh".into()),
+                    suspect: None,
                     confidence: Some(0.9),
                 },
             },

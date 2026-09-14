@@ -74,8 +74,7 @@ export const api = {
   renameSession: (id: string, title: string) => call<SessionInfo>("rename_session", { id, title }),
   exportSession: (id: string, format: ExportFormat, path: string) =>
     call<string>("export_session", { id, format, path }),
-  transcribeFile: (path: string, language?: string | null) =>
-    call<SessionInfo>("transcribe_file", { path, language: language ?? null }),
+  transcribeFile: (path: string) => call<SessionInfo>("transcribe_file", { path }),
 
   /* ---------------- 应用 ---------------- */
   getAppInfo: () => call<AppInfo>("get_app_info"),

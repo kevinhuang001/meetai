@@ -35,7 +35,11 @@ use crate::ai::client::{AiClient, TokenUsage};
 use crate::ai::prompts;
 use crate::ai::summarizer::{self, SummaryPatch};
 use crate::asr::client::{AsrClient, TranscribeRequest};
-use crate::asr::filter::{clean_text, is_likely_hallucination};
+use crate::asr::filter::{clean_text, is_suspect, suspect_reason};
+
+/// 识别服务什么都没返回时，落到记录里的占位文本。
+/// 它让「服务在工作但没有结果」在界面上可见，而不是一片空白。
+pub const SUSPECT_EMPTY_PLACEHOLDER: &str = "（本段没有识别出内容）";
 use crate::asr::hypothesis::HypothesisBuffer;
 use crate::audio::capture::{CaptureHandle, MixedFrame, SourceKind};
 use crate::audio::vad::{FrameEnergy, SpeechSpan, VadEngine};
@@ -650,7 +654,7 @@ fn run_segmenter(
             .collect();
 
         for action in segmenter.push_frame(&frame.samples, &levels) {
-            apply_action(action, &job_tx, &session, &emitter, &session_id);
+            apply_action(action, &job_tx, &emitter, &session_id);
         }
 
         // 电平事件（10Hz）
@@ -690,7 +694,7 @@ fn run_segmenter(
 
     // 收尾：把最后一句吐出来并等待识别线程消化
     for action in segmenter.flush() {
-        apply_action(action, &job_tx, &session, &emitter, &session_id);
+        apply_action(action, &job_tx, &emitter, &session_id);
     }
     // 同步最终统计（电平事件可能停在最后一次定稿之前）
     {
@@ -709,7 +713,6 @@ fn run_segmenter(
 fn apply_action(
     action: SegmenterAction,
     job_tx: &Sender<AsrJob>,
-    session: &Arc<Mutex<Session>>,
     emitter: &Arc<dyn Emitter>,
     session_id: &str,
 ) {
@@ -719,7 +722,6 @@ fn apply_action(
         }
         SegmenterAction::SpeechStarted { start_ms } => {
             let _ = start_ms;
-            let language = session.lock().language.clone();
             events::emit(
                 emitter,
                 event::STATE,
@@ -727,12 +729,10 @@ fn apply_action(
                     session_id: session_id.to_string(),
                     state: AsrStateKind::Speech,
                     message: None,
-                    language,
-                        },
+                },
             );
         }
         SegmenterAction::SpeechEnded { .. } => {
-            let language = session.lock().language.clone();
             events::emit(
                 emitter,
                 event::STATE,
@@ -740,8 +740,7 @@ fn apply_action(
                     session_id: session_id.to_string(),
                     state: AsrStateKind::Listening,
                     message: None,
-                    language,
-                        },
+                },
             );
         }
     }
@@ -779,7 +778,6 @@ fn run_asr_worker(
                 "正在连接识别服务「{}」（{}）…",
                 cfg.provider.name, cfg.provider.model
             )),
-            language: None,
         },
     );
 
@@ -793,12 +791,6 @@ fn run_asr_worker(
     let endpoint = cfg.provider.endpoint();
     tracing::info!("语音识别服务：{endpoint}（模型 {}）", cfg.provider.model);
 
-    let mut language = cfg.settings.language_arg().map(str::to_string);
-    let mut locked_language = language.is_some();
-    {
-        let mut s = session.lock();
-        s.language = language.clone();
-    }
 
     events::emit(
         &emitter,
@@ -807,12 +799,13 @@ fn run_asr_worker(
             session_id: sid.clone(),
             state: AsrStateKind::Listening,
             message: None,
-            language: language.clone(),
         },
     );
 
     let mut queue = JobQueue::new();
     let mut hb = HypothesisBuffer::new();
+    // 当前这句话已经稳定下来的部分（灰字预览里作为「已确认」前缀展示）
+    let mut committed_now = String::new();
     let mut current_utt: Option<u64> = None;
     let mut prompt_tail: Option<String> = None;
     let mut rtf_samples: VecDeque<f32> = VecDeque::new();
@@ -861,12 +854,12 @@ fn run_asr_worker(
                 }
                 if current_utt != Some(utt_id) {
                     hb.reset();
+                    committed_now.clear();
                     current_utt = Some(utt_id);
                 }
                 let audio_ms = samples.len() as i64 * 1000 / crate::audio::vad::RATE as i64;
                 let req = TranscribeRequest {
                     samples,
-                    language: language.clone(),
                     prompt: context_prompt(&cfg.settings, &prompt_tail),
                     temperature: cfg.settings.temperature,
                 };
@@ -876,10 +869,26 @@ fn run_asr_worker(
                             continue;
                         }
                         let text = clean_text(&out.text);
-                        if text.is_empty() || is_likely_hallucination(&text, audio_ms) {
+                        if text.is_empty() {
+                            continue;
+                        }
+                        // 灰字只是预览：可疑内容同样展示，但不参与「最长公共前缀」定稿，
+                        // 免得幻觉把已经稳定的字带偏。
+                        if is_suspect(&text, audio_ms) {
+                            events::emit(
+                                &emitter,
+                                event::PARTIAL,
+                                &AsrPartialEvent {
+                                    session_id: sid.clone(),
+                                    committed: committed_now.clone(),
+                                    tentative: text,
+                                    start_ms,
+                                },
+                            );
                             continue;
                         }
                         let agreement = hb.update(&text);
+                        committed_now = agreement.committed.clone();
                         if agreement.is_empty() {
                             continue;
                         }
@@ -901,12 +910,12 @@ fn run_asr_worker(
             // ---------- 定稿 ----------
             AsrJob::Final { utt_id, samples, start_ms, end_ms, share } => {
                 hb.reset();
+                committed_now.clear();
                 current_utt = None;
 
                 let audio_ms = samples.len() as i64 * 1000 / crate::audio::vad::RATE as i64;
                 let req = TranscribeRequest {
                     samples,
-                    language: language.clone(),
                     prompt: context_prompt(&cfg.settings, &prompt_tail),
                     temperature: cfg.settings.temperature,
                 };
@@ -951,41 +960,30 @@ fn run_asr_worker(
                     latency_samples.pop_front();
                 }
 
-                let text = clean_text(&out.text);
-                if text.is_empty() || is_likely_hallucination(&text, audio_ms) {
-                    events::emit(
-                        &emitter,
-                        event::PARTIAL,
-                        &AsrPartialEvent {
-                            session_id: sid.clone(),
-                            committed: String::new(),
-                            tentative: String::new(),
-                            start_ms: end_ms,
-                        },
-                    );
-                    continue;
-                }
+                // [重要] 服务返回什么就展示什么，绝不静默丢弃。
+                //
+                // 曾经的做法是把疑似幻听的整段结果直接丢掉 —— 结果就是：模型和
+                // 语言对不上时（比如中文音频被按英文识别），模型吐出一段英文幻觉，
+                // 被过滤器吃干净，界面上一个字都没有，用户完全无从判断。
+                // 现在只做标注：文本照常进记录，可疑的标出来（suspect）。
+                let mut text = clean_text(&out.text);
 
-                // 首次拿到服务返回的语言时锁定，后续请求就带上它（更快更稳）
-                if !locked_language {
-                    if let Some(detected) = out.language.clone() {
-                        if !detected.is_empty() && !detected.eq_ignore_ascii_case("auto") {
-                            language = Some(normalize_language(&detected));
-                            locked_language = true;
-                            let lang = language.clone();
-                            session.lock().language = lang.clone();
-                            events::emit(
-                                &emitter,
-                                event::STATE,
-                                &AsrStateEvent {
-                                    session_id: sid.clone(),
-                                    state: AsrStateKind::Listening,
-                                    message: None,
-                                    language: lang,
-                                                        },
-                            );
-                        }
-                    }
+                // 服务确实什么都没返回时，也要给出一条可见记录，
+                // 否则「识别服务在工作但没结果」和「程序卡死了」在界面上无法区分。
+                if text.is_empty() {
+                    text = SUSPECT_EMPTY_PLACEHOLDER.to_string();
+                }
+                let suspect = suspect_reason(&text, audio_ms)
+                    .map(str::to_string)
+                    .or_else(|| {
+                        (text == SUSPECT_EMPTY_PLACEHOLDER)
+                            .then(|| "识别服务没有返回文本".to_string())
+                    });
+                if let Some(reason) = suspect.as_deref() {
+                    tracing::warn!(
+                        "第 {request_counter} 段结果可疑（{reason}，音频 {audio_ms} ms）：{}",
+                        crate::util::truncate_chars(&text, 80)
+                    );
                 }
 
                 let speaker = match cfg.single_source {
@@ -1002,8 +1000,8 @@ fn run_asr_worker(
                         start_ms,
                         end_ms: end_ms.max(start_ms + 1),
                         speaker,
-                        language: language.clone(),
                         confidence: None,
+                        suspect,
                     };
                     s.push_segment(seg.clone());
                     s.stats.rtf = median_f32(&rtf_samples);
@@ -1043,21 +1041,6 @@ fn run_asr_worker(
     }
 
     Ok(())
-}
-
-/// 服务返回的语言可能是 `chinese` / `zh` / `Chinese` 这类形式，统一成 ISO 代码
-fn normalize_language(raw: &str) -> String {
-    let lower = raw.trim().to_lowercase();
-    match lower.as_str() {
-        "chinese" | "zh" | "cmn" | "mandarin" => "zh".into(),
-        "english" | "en" => "en".into(),
-        "japanese" | "ja" | "jpn" => "ja".into(),
-        "korean" | "ko" | "kor" => "ko".into(),
-        "cantonese" | "yue" => "yue".into(),
-        other if other.len() <= 5 => other.to_string(),
-        // 长名字（例如 "chinese (simplified)"）取首词再试一次
-        _ => lower.split_whitespace().next().map(normalize_language).unwrap_or(lower),
-    }
 }
 
 /// 是否把上一句文本作为 prompt 传给识别服务（提升人名/术语一致性）
@@ -1111,7 +1094,8 @@ pub async fn summarize_once(
         if last_end <= covered_from && !force {
             return Ok(false);
         }
-        let new_text = s.transcript_between(covered_from, last_end);
+        // 只把「可信段」喂给大模型：可疑段的文本照常显示给用户，但不进纪要
+        let new_text = s.transcript_between_trusted(covered_from, last_end);
         if new_text.trim().is_empty() && !force {
             return Ok(false);
         }
@@ -1273,7 +1257,8 @@ pub async fn summary_loop(
             let (new_chars, due) = {
                 let s = session.lock();
                 let last_end = s.last_segment_end_ms();
-                let new_text = s.transcript_between(s.summary.covered_until_ms, last_end);
+                let new_text =
+                    s.transcript_between_trusted(s.summary.covered_until_ms, last_end);
                 let chars = new_text.chars().count() as u32;
                 (
                     chars,

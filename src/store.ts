@@ -71,7 +71,6 @@ export interface AppState {
   pendingTitle: string;
   asrState: AsrStateKind;
   asrMessage: string | null;
-  language: string | null;
 
   segments: TranscriptSegment[];
   summary: SummaryState;
@@ -105,7 +104,7 @@ export interface AppState {
   setSession: (s: SessionInfo | null) => void;
   patchSession: (patch: Partial<SessionInfo>) => void;
   setPendingTitle: (t: string) => void;
-  setAsrState: (state: AsrStateKind, message: string | null, language: string | null) => void;
+  setAsrState: (state: AsrStateKind, message: string | null) => void;
   pushSegment: (seg: TranscriptSegment) => void;
   setSegments: (segs: TranscriptSegment[]) => void;
   setSummary: (s: SummaryState) => void;
@@ -164,7 +163,6 @@ export const useStore = create<AppState>((set, get) => ({
   pendingTitle: "",
   asrState: "idle",
   asrMessage: null,
-  language: null,
 
   segments: [],
   summary: emptySummary(),
@@ -191,7 +189,7 @@ export const useStore = create<AppState>((set, get) => ({
   patchSession: (patch) =>
     set((s) => (s.session ? { session: { ...s.session, ...patch } } : {})),
   setPendingTitle: (pendingTitle) => set({ pendingTitle }),
-  setAsrState: (asrState, asrMessage, language) => set({ asrState, asrMessage, language }),
+  setAsrState: (asrState, asrMessage) => set({ asrState, asrMessage }),
   pushSegment: (seg) => set((s) => ({ segments: [...s.segments, seg] })),
   setSegments: (segments) => set({ segments }),
   setSummary: (summary) => set({ summary }),

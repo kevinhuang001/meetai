@@ -46,8 +46,12 @@ pub struct TranscriptSegment {
     pub start_ms: i64,
     pub end_ms: i64,
     pub speaker: Speaker,
-    pub language: Option<String>,
     pub confidence: Option<f32>,
+    /// 这段结果为什么可疑（幻听/重复/服务没返回内容）。
+    ///
+    /// **有值不代表文本被丢弃**：文本照常显示，只是界面上会标灰提示，
+    /// 并且不会进入纪要输入，避免污染摘要。
+    pub suspect: Option<String>,
 }
 
 impl TranscriptSegment {
@@ -75,7 +79,6 @@ pub struct SessionStats {
 #[serde(default, rename_all = "camelCase")]
 pub struct SessionConfig {
     pub model_id: String,
-    pub language: String,
     pub enable_mic: bool,
     pub enable_loopback: bool,
     pub mic_label: Option<String>,
@@ -100,7 +103,6 @@ pub struct SessionInfo {
     pub created_at: i64,
     pub duration_ms: i64,
     pub config: SessionConfig,
-    pub language: Option<String>,
     pub error: Option<String>,
 }
 
@@ -113,7 +115,6 @@ pub struct SessionDetail {
     pub created_at: i64,
     pub duration_ms: i64,
     pub config: SessionConfig,
-    pub language: Option<String>,
     pub error: Option<String>,
     pub segments: Vec<TranscriptSegment>,
     pub summary: SummaryState,
@@ -150,7 +151,6 @@ pub struct Session {
     /// 累计录音时长（毫秒，不含暂停时间）
     pub duration_ms: i64,
     pub config: SessionConfig,
-    pub language: Option<String>,
     pub error: Option<String>,
     pub segments: Vec<TranscriptSegment>,
     pub summary: SummaryState,
@@ -173,7 +173,6 @@ impl Default for Session {
             created_at: now_ms(),
             duration_ms: 0,
             config: SessionConfig::default(),
-            language: None,
             error: None,
             segments: Vec::new(),
             summary: SummaryState::default(),
@@ -273,10 +272,32 @@ impl Session {
         out
     }
 
-    /// 完整转写（用于生成最终纪要），过长时保留头尾
-    pub fn full_transcript(&self, max_chars: usize) -> String {
+    /// 给大模型看的转写文本：**排除可疑段**。
+    ///
+    /// 可疑段（幻听/重复/服务没返回内容）照常显示给用户看，但不该喂给大模型 ——
+    /// 一段英文幻觉足以把整份纪要带偏。如果全都是可疑段，返回空串，
+    /// 让纪要循环知道「这轮没有可用的新内容」。
+    pub fn transcript_between_trusted(&self, from_ms: i64, to_ms: i64) -> String {
         let mut out = String::new();
         for seg in &self.segments {
+            if seg.suspect.is_some() || seg.end_ms <= from_ms || seg.start_ms > to_ms {
+                continue;
+            }
+            out.push_str(&format!(
+                "[{}] {}：{}\n",
+                format_clock(seg.start_ms),
+                seg.speaker.label(),
+                seg.text
+            ));
+        }
+        out
+    }
+
+    /// 完整转写（用于生成最终纪要），过长时保留头尾。
+    /// 同样跳过可疑段，理由见 [`Self::transcript_between_trusted`]。
+    pub fn full_transcript(&self, max_chars: usize) -> String {
+        let mut out = String::new();
+        for seg in self.segments.iter().filter(|s| s.suspect.is_none()) {
             out.push_str(&format!(
                 "[{}] {}：{}\n",
                 format_clock(seg.start_ms),
@@ -295,7 +316,6 @@ impl Session {
             created_at: self.created_at,
             duration_ms: self.live_duration_ms(now),
             config: self.config.clone(),
-            language: self.language.clone(),
             error: self.error.clone(),
         }
     }
@@ -308,7 +328,6 @@ impl Session {
             created_at: self.created_at,
             duration_ms: self.live_duration_ms(now),
             config: self.config.clone(),
-            language: self.language.clone(),
             error: self.error.clone(),
             segments: self.segments.clone(),
             summary: self.summary.clone(),
@@ -507,10 +526,6 @@ fn render_markdown(s: &Session) -> String {
     out.push_str(&format!("| 开始时间 | {} |\n", format_created_at(s.created_at)));
     out.push_str(&format!("| 时长 | {} |\n", format_clock(s.duration_ms)));
     out.push_str(&format!("| 识别服务 | {} |\n", s.config.model_id));
-    out.push_str(&format!(
-        "| 识别语言 | {} |\n",
-        s.language.clone().unwrap_or_else(|| "自动".into())
-    ));
     out.push_str(&format!("| 音频来源 | {} |\n", sources.join(" + ")));
     out.push_str(&format!(
         "| 语音时长 | {} |\n",
@@ -652,14 +667,12 @@ mod tests {
     fn sample_session() -> Session {
         let mut s = Session::new("产品周会".into(), SessionConfig {
             model_id: "small".into(),
-            language: "zh".into(),
             enable_mic: true,
             enable_loopback: true,
             mic_label: Some("MacBook 麦克风".into()),
             loopback_label: Some("扬声器".into()),
         });
         s.duration_ms = 754_000;
-        s.language = Some("zh".into());
         s.status = SessionStatus::Finished;
         s.push_segment(TranscriptSegment {
             id: 0,
@@ -667,8 +680,8 @@ mod tests {
             start_ms: 1_200,
             end_ms: 4_500,
             speaker: Speaker::Me,
-            language: Some("zh".into()),
             confidence: Some(0.92),
+            suspect: None,
         });
         s.push_segment(TranscriptSegment {
             id: 0,
@@ -676,8 +689,8 @@ mod tests {
             start_ms: 5_000,
             end_ms: 9_800,
             speaker: Speaker::Others,
-            language: Some("zh".into()),
             confidence: Some(0.88),
+            suspect: None,
         });
         s.summary.overview = "复盘三季度并确定下季度方向。".into();
         s.summary.summary = "- 三季度营收环比 +18%\n- 流失率上升 2pt".into();
@@ -708,8 +721,8 @@ mod tests {
             start_ms: 0,
             end_ms: 1_000,
             speaker: Speaker::Me,
-            language: None,
             confidence: None,
+            suspect: None,
         });
         let b = s.push_segment(TranscriptSegment {
             id: 0,
@@ -717,8 +730,8 @@ mod tests {
             start_ms: 1_000,
             end_ms: 2_500,
             speaker: Speaker::Others,
-            language: None,
             confidence: None,
+            suspect: None,
         });
         assert_eq!((a, b), (1, 2));
         assert_eq!(s.stats.chars, 5);
@@ -880,6 +893,45 @@ mod tests {
         assert!(!name.contains('/'), "文件名不能含路径分隔符：{name}");
         assert!(!name.contains('?'));
         assert!(!name.contains(':'));
+    }
+
+    #[test]
+    fn suspect_segments_are_kept_but_excluded_from_summary_input() {
+        // 真实事故回归：模型/语言不匹配时服务返回英文幻觉，旧实现把它整段丢掉，
+        // 界面上一个字都没有。现在的约定是 —— 照常展示，但不进纪要。
+        let mut s = Session::default();
+        s.push_segment(TranscriptSegment {
+            id: 0,
+            text: "我们先过一下三季度的增长情况。".into(),
+            start_ms: 0,
+            end_ms: 3_000,
+            speaker: Speaker::Me,
+            confidence: None,
+            suspect: None,
+        });
+        s.push_segment(TranscriptSegment {
+            id: 0,
+            text: "Thank you for watching!".into(),
+            start_ms: 3_000,
+            end_ms: 5_000,
+            speaker: Speaker::Others,
+            confidence: None,
+            suspect: Some("疑似模型幻听短语".into()),
+        });
+
+        // 1) 段落本身必须留在会话里（界面才能显示出来）
+        assert_eq!(s.segments.len(), 2, "可疑段不得被删除");
+        assert!(s.segments.iter().any(|x| x.text.contains("Thank you")));
+        // 字数统计照旧，用户看到的确实是这些内容
+        assert_eq!(s.stats.chars, s.segments.iter().map(|x| x.text.chars().count() as i64).sum::<i64>());
+
+        // 2) 但对大模型要隐身：幻觉足以把整份纪要带偏
+        let all = s.transcript_between(0, 10_000);
+        assert!(all.contains("Thank you"), "给人看的转写要包含可疑段");
+        let trusted = s.transcript_between_trusted(0, 10_000);
+        assert!(trusted.contains("三季度"), "正常内容要进纪要");
+        assert!(!trusted.contains("Thank you"), "可疑内容不得进纪要");
+        assert!(!s.full_transcript(usize::MAX).contains("Thank you"));
     }
 
     #[test]

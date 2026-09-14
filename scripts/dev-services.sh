@@ -13,6 +13,10 @@ set -uo pipefail
 
 WHISPER_DIR="${WHISPER_DIR:-$HOME/whisper-server}"
 WHISPER_BIN="${WHISPER_BIN:-$WHISPER_DIR/build/bin/whisper-server}"
+# 识别语言由**服务端**决定，应用不参与。
+# whisper-server 的 language 默认值是 en，不显式设成 auto 的话，
+# 中文语音会被按英文硬识别，吐出一段英文幻觉。
+WHISPER_LANG="${WHISPER_LANG:-auto}"
 WHISPER_MODEL="${WHISPER_MODEL:-$WHISPER_DIR/models/ggml-base.bin}"
 WHISPER_PORT="${WHISPER_PORT:-8090}"
 OLLAMA_PORT="${OLLAMA_PORT:-11434}"
@@ -67,8 +71,10 @@ TIP
     return 1
   fi
 
-  c_ok "启动 whisper-server（$(basename "$WHISPER_MODEL")，监听 $BIND_HOST:$WHISPER_PORT）"
+  c_ok "启动 whisper-server（$(basename "$WHISPER_MODEL")，语言 $WHISPER_LANG，监听 $BIND_HOST:$WHISPER_PORT）"
+  # --language auto 很关键：whisper-server 默认 en，中文会被按英文识别
   nohup "$WHISPER_BIN" -m "$WHISPER_MODEL" --host "$BIND_HOST" --port "$WHISPER_PORT" \
+    --language "$WHISPER_LANG" \
     > "$RUN_DIR/whisper.log" 2>&1 &
   echo $! > "$RUN_DIR/whisper.pid"
   if wait_http "http://127.0.0.1:$WHISPER_PORT/" 40; then
@@ -153,6 +159,8 @@ cmd_status() {
     Base URL   http://127.0.0.1:$WHISPER_PORT
     接口路径    /inference
     模型名      whisper-1        （whisper.cpp server 不校验名字，非空即可）
+    识别语言    由服务端决定：启动 whisper-server 时带 --language auto
+                （默认是 en，不加这个参数中文会被按英文识别）
     API Key     留空
   AI 接口 → 服务商：本地 Ollama
     Base URL   http://127.0.0.1:$OLLAMA_PORT/v1

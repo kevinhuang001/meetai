@@ -38,11 +38,28 @@ function ActiveRow({ onGrow, showSpeaker }: { onGrow: () => void; showSpeaker: b
 }
 
 function SegmentRow({ seg, onCopied }: { seg: TranscriptSegment; onCopied: () => void }) {
+  // 可疑段（幻听 / 重复输出 / 服务没返回内容）**照常显示**，只是标灰并给一个标记。
+  // 绝不静默丢弃：识别出问题的时候，用户更需要看到原始结果，而不是一片空白。
+  const suspect = seg.suspect;
   return (
-    <div className="t-row" data-testid="segment-row" data-segment-id={seg.id}>
+    <div
+      className={suspect ? "t-row suspect" : "t-row"}
+      data-testid="segment-row"
+      data-segment-id={seg.id}
+      data-suspect={suspect ? "1" : undefined}
+    >
       <span className="t-time mono">{formatClock(seg.startMs)}</span>
       <span className={`t-speaker speaker-${seg.speaker}`}>{SPEAKER_LABEL[seg.speaker]}</span>
       <span className="t-text">{seg.text}</span>
+      {suspect ? (
+        <span
+          className="t-suspect"
+          data-testid="segment-suspect"
+          title={`${suspect}；仅标注，不会用于生成纪要`}
+        >
+          {suspect}
+        </span>
+      ) : null}
       <button
         className="row-copy"
         aria-label={`复制这条转写：${seg.text.slice(0, 12)}`}
@@ -94,6 +111,8 @@ export function TranscriptList({
   }, [segments, filter]);
 
   const filtering = filter.trim().length > 0;
+  // 可疑段计数：让「识别质量有问题」这件事在界面上被看见，而不是让人以为程序没工作
+  const suspectCount = useMemo(() => segments.filter((s) => s.suspect).length, [segments]);
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;
@@ -163,6 +182,15 @@ export function TranscriptList({
           <span className="dim small" data-testid="transcript-count">
             {filtering ? `${filtered.length} / ${segments.length} 条` : `${segments.length} 条`}
           </span>
+          {suspectCount > 0 ? (
+            <span
+              className="t-suspect"
+              data-testid="transcript-suspect-count"
+              title="这些段落的识别结果可疑（幻听/重复/服务没返回内容）。它们照常显示，但不会用于生成纪要。"
+            >
+              {suspectCount} 条可疑
+            </span>
+          ) : null}
           <button
             className="link-btn"
             onClick={copyAll}

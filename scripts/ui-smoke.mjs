@@ -480,6 +480,35 @@ async function main() {
     }
     check("c1. 转写列表出现 ≥2 条已定稿转写", counted >= 2, `12 秒时 ${segCount} 条，最终 ${counted} 条`);
 
+    // c1b. 可疑结果必须「照样显示」。
+    // 这是踩过的真实事故：模型和语言对不上时返回英文幻觉，被过滤器直接丢掉，
+    // 界面上一个字都没有，用户以为程序坏了。可疑只能标注，不能删除。
+    const suspectRows = page.locator('[data-testid="transcript-list"] [data-suspect="1"]');
+    const suspectRowCount = await suspectRows.count();
+    let suspectText = "";
+    let suspectBadge = 0;
+    if (suspectRowCount > 0) {
+      suspectText = (await suspectRows.first().locator(".t-text").innerText()).trim();
+      suspectBadge = await suspectRows.first().locator('[data-testid="segment-suspect"]').count();
+    } else {
+      await waitFor(
+        async () => ((await suspectRows.count()) > 0 ? 1 : 0),
+        { timeout: 20000, interval: 500, label: "等待可疑段落出现" },
+      ).catch(() => 0);
+      if ((await suspectRows.count()) > 0) {
+        suspectText = (await suspectRows.first().locator(".t-text").innerText()).trim();
+        suspectBadge = await suspectRows.first().locator('[data-testid="segment-suspect"]').count();
+      }
+    }
+    check(
+      "c1b. 可疑段落照常出现在转写里（不被静默丢弃）",
+      suspectText.length > 0,
+      suspectText ? `内容：${suspectText.slice(0, 30)}` : "没有找到可疑段落",
+    );
+    check("c1c. 可疑段落带可见标记说明原因", suspectBadge === 1, `标记数=${suspectBadge}`);
+    const suspectCounter = await page.locator('[data-testid="transcript-suspect-count"]').count();
+    check("c1d. 工具栏汇总可疑条数", suspectCounter === 1, `计数元素=${suspectCounter}`);
+
     await shot(page, "03-segments.png");
 
     // 正在录音的会话置顶并高亮（红点）
@@ -731,8 +760,14 @@ async function main() {
     );
     const maxChunk = await page.locator('[data-testid="asr-max-chunk"]').inputValue();
     check("e5f. 单次上传时长上限在 5~120 秒范围内", Number(maxChunk) >= 5 && Number(maxChunk) <= 120, `${maxChunk}s`);
-    const langOptions = await page.locator('[data-testid="asr-language"] option').count();
-    check("e5g. 识别语言下拉复用语言列表", langOptions >= 10, `${langOptions} 种语言`);
+    // 识别语言属于识别服务的事，应用里不应出现该设置项
+    const langSelectors = await page.locator('[data-testid="asr-language"]').count();
+    const translateSwitches = await page.locator('[data-testid="asr-translate-english"]').count();
+    check(
+      "e5g. 应用不提供「识别语言/翻译成英文」设置（语言归识别服务管）",
+      langSelectors === 0 && translateSwitches === 0,
+      `language=${langSelectors} translate=${translateSwitches}`,
+    );
 
     // 预设下拉：已存在的预设应「切过去」而不是新建
     await page.locator('[data-testid="asr-preset-select"]').selectOption("openai");

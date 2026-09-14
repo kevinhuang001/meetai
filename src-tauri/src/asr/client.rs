@@ -20,6 +20,40 @@ use crate::settings::AsrProvider;
 use crate::util::truncate_chars;
 
 const USER_AGENT: &str = concat!("MeetingHear/", env!("CARGO_PKG_VERSION"));
+
+/// 构建 multipart 请求体。
+///
+/// **这里刻意不发 `language` 字段**：识别语言由识别服务自己决定。
+/// 踩过的事故：应用曾把「语言」做成自己的设置项并且默认省略该字段，
+/// 而 whisper.cpp server 的 `language` 默认值是 `en`，于是中文语音被
+/// 按英文硬识别，吐出一段英文幻觉，用户看到的是「识别不出任何东西」。
+/// 正确做法是服务端配置（例如 `whisper-server --language auto`），
+/// 应用只负责把音频原样上传。
+pub(crate) fn build_form(
+    provider: &AsrProvider,
+    req: &TranscribeRequest,
+    wav: Vec<u8>,
+) -> Result<Form, AsrError> {
+    let mut form = Form::new()
+        .part(
+            "file",
+            Part::bytes(wav)
+                .file_name("audio.wav")
+                .mime_str("audio/wav")
+                .map_err(|e| AsrError::Transport(AppError::asr(e.to_string())))?,
+        )
+        .text("model", provider.model.trim().to_string())
+        .text("response_format", provider.response_format.clone())
+        .text("temperature", format!("{:.2}", req.temperature));
+
+    if let Some(prompt) = req.prompt.as_deref() {
+        let prompt = prompt.replace('\0', " ");
+        if !prompt.trim().is_empty() {
+            form = form.text("prompt", truncate_chars(prompt.trim(), 200));
+        }
+    }
+    Ok(form)
+}
 /// 请求失败时的重试次数（限流/5xx/网络抖动）
 const MAX_ATTEMPTS: u32 = 2;
 
@@ -27,7 +61,6 @@ const MAX_ATTEMPTS: u32 = 2;
 pub struct TranscribeRequest {
     /// 16kHz 单声道 f32
     pub samples: Vec<f32>,
-    pub language: Option<String>,
     /// 上一句已确认文本（作为 prompt，提升人名/术语一致性）
     pub prompt: Option<String>,
     pub temperature: f32,
@@ -36,7 +69,6 @@ pub struct TranscribeRequest {
 #[derive(Debug, Clone)]
 pub struct AsrOutcome {
     pub text: String,
-    pub language: Option<String>,
     pub elapsed_ms: u64,
     pub audio_ms: i64,
 }
@@ -121,11 +153,9 @@ impl AsrClient {
                 .post_once(&url, &provider, req, wav.clone(), timeout)
                 .await
             {
-                Ok((text, language)) => {
+                Ok(text) => {
                     return Ok(AsrOutcome {
                         text,
-                        // 服务返回的语言优先（verbose_json 才有），否则用请求里指定的
-                        language: language.or_else(|| req.language.clone()),
                         elapsed_ms: started.elapsed().as_millis() as u64,
                         audio_ms,
                     })
@@ -149,30 +179,8 @@ impl AsrClient {
         req: &TranscribeRequest,
         wav: Vec<u8>,
         timeout: Duration,
-    ) -> Result<(String, Option<String>), AsrError> {
-        let mut form = Form::new()
-            .part(
-                "file",
-                Part::bytes(wav)
-                    .file_name("audio.wav")
-                    .mime_str("audio/wav")
-                    .map_err(|e| AsrError::Transport(AppError::asr(e.to_string())))?,
-            )
-            .text("model", provider.model.trim().to_string())
-            .text("response_format", provider.response_format.clone())
-            .text("temperature", format!("{:.2}", req.temperature));
-
-        if let Some(lang) = req.language.as_deref() {
-            if !lang.is_empty() && !lang.eq_ignore_ascii_case("auto") {
-                form = form.text("language", lang.to_string());
-            }
-        }
-        if let Some(prompt) = req.prompt.as_deref() {
-            let prompt = prompt.replace('\0', " ");
-            if !prompt.trim().is_empty() {
-                form = form.text("prompt", truncate_chars(prompt.trim(), 200));
-            }
-        }
+    ) -> Result<String, AsrError> {
+        let form = build_form(provider, req, wav)?;
 
         let mut request = self
             .client_for(url)
@@ -233,7 +241,6 @@ impl AsrClient {
         let started = Instant::now();
         let req = TranscribeRequest {
             samples: silence,
-            language: Some("zh".into()),
             prompt: None,
             temperature: 0.0,
         };
@@ -260,7 +267,8 @@ impl AsrClient {
  * 内部错误
  * ========================================================================== */
 
-enum AsrError {
+#[derive(Debug)]
+pub(crate) enum AsrError {
     Status { code: u16, message: String },
     Transport(AppError),
 }
@@ -324,35 +332,30 @@ fn map_reqwest_error(e: reqwest::Error) -> AppError {
     }
 }
 
-/// 从响应里取出「转写文本 + 可选语言」。
+/// 从响应里取出转写文本。
 ///
 /// 兼容三种返回形态：
 ///   1. `{"text": "..."}`（OpenAI 的 json 格式 / whisper.cpp server）
-///   2. `{"text": "...", "language": "chinese", "segments": [...]}`（verbose_json）
+///   2. `{"text": "...", "language": "chinese", "segments": [...]}`（verbose_json，语言字段忽略）
 ///   3. 纯文本（response_format=text，或网关直接返回字符串）
-fn extract_result(body: &str, content_type: &str) -> Option<(String, Option<String>)> {
+fn extract_result(body: &str, content_type: &str) -> Option<String> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         return None;
     }
 
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-        let language = value
-            .get("language")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .filter(|s| !s.is_empty());
         if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
-            return Some((text.trim().to_string(), language));
+            return Some(text.trim().to_string());
         }
         // 少数网关把结果包一层
         for key in ["result", "data", "output"] {
             if let Some(inner) = value.get(key) {
                 if let Some(text) = inner.get("text").and_then(|v| v.as_str()) {
-                    return Some((text.trim().to_string(), language));
+                    return Some(text.trim().to_string());
                 }
                 if let Some(text) = inner.as_str() {
-                    return Some((text.trim().to_string(), language));
+                    return Some(text.trim().to_string());
                 }
             }
         }
@@ -363,13 +366,7 @@ fn extract_result(body: &str, content_type: &str) -> Option<(String, Option<Stri
     if content_type.contains("html") || trimmed.starts_with('<') {
         return None;
     }
-    Some((trimmed.to_string(), None))
-}
-
-/// 供测试使用的便捷包装
-#[cfg(test)]
-fn extract_text(body: &str, content_type: &str) -> Option<String> {
-    extract_result(body, content_type).map(|(t, _)| t)
+    Some(trimmed.to_string())
 }
 
 fn extract_api_error(body: &str) -> Option<String> {
@@ -409,51 +406,51 @@ mod tests {
     #[test]
     fn parses_openai_json_response() {
         let body = r#"{"text":" 你好世界 "}"#;
-        assert_eq!(extract_text(body, "application/json").unwrap(), "你好世界");
+        assert_eq!(extract_result(body, "application/json").unwrap(), "你好世界");
     }
 
     #[test]
     fn parses_verbose_json_response() {
+        // verbose_json 会带 language/segments，应用只关心 text
         let body = r#"{"task":"transcribe","language":"zh","duration":3.2,"text":"会议开始","segments":[{"id":0,"text":"会议开始"}]}"#;
-        let (text, lang) = extract_result(body, "application/json").unwrap();
-        assert_eq!(text, "会议开始");
-        assert_eq!(lang.as_deref(), Some("zh"));
+        assert_eq!(extract_result(body, "application/json").unwrap(), "会议开始");
     }
 
     #[test]
-    fn json_format_has_no_language_field() {
-        let (text, lang) = extract_result(r#"{"text":"你好"}"#, "application/json").unwrap();
-        assert_eq!(text, "你好");
-        assert!(lang.is_none());
+    fn parses_minimal_json_response() {
+        assert_eq!(
+            extract_result(r#"{"text":"你好"}"#, "application/json").unwrap(),
+            "你好"
+        );
     }
 
     #[test]
     fn parses_wrapped_response() {
         let body = r#"{"result":{"text":"嵌套结果"}}"#;
-        assert_eq!(extract_text(body, "application/json").unwrap(), "嵌套结果");
+        assert_eq!(extract_result(body, "application/json").unwrap(), "嵌套结果");
     }
 
     #[test]
     fn parses_plain_text_response() {
         // response_format=text 时服务直接返回纯文本
-        assert_eq!(extract_text("纯文本结果", "text/plain").unwrap(), "纯文本结果");
+        assert_eq!(extract_result("纯文本结果", "text/plain").unwrap(), "纯文本结果");
         // whisper.cpp 在 text 格式下也会返回裸文本
-        assert_eq!(extract_text("Hello world\n", "text/plain").unwrap(), "Hello world");
+        assert_eq!(extract_result("Hello world\n", "text/plain").unwrap(), "Hello world");
     }
 
     #[test]
     fn rejects_html_error_pages() {
         let html = "<!DOCTYPE html><html><body>502 Bad Gateway</body></html>";
-        assert!(extract_text(html, "text/html").is_none());
-        assert!(extract_text(html, "text/plain").is_none());
+        assert!(extract_result(html, "text/html").is_none());
+        assert!(extract_result(html, "text/plain").is_none());
     }
 
     #[test]
     fn empty_text_is_not_a_valid_result() {
-        assert!(extract_text("", "application/json").is_none());
-        assert!(extract_text("   ", "text/plain").is_none());
+        assert!(extract_result("", "application/json").is_none());
+        assert!(extract_result("   ", "text/plain").is_none());
         // 服务对纯静音可能返回空 text，此时文本为空字符串而不是 None
-        assert_eq!(extract_text(r#"{"text":""}"#, "application/json").unwrap(), "");
+        assert_eq!(extract_result(r#"{"text":""}"#, "application/json").unwrap(), "");
     }
 
     #[test]
@@ -488,5 +485,50 @@ mod tests {
     #[test]
     fn client_constructs() {
         assert!(AsrClient::new().is_ok());
+    }
+
+    #[test]
+    fn request_never_carries_a_language_field() {
+        // 识别语言由服务决定，应用不得插手。
+        // 踩过的事故：whisper.cpp server 的 language 默认是 en，
+        // 应用一旦省略或指定语言，中文就会被按英文识别。
+        let provider = AsrProvider {
+            model: "whisper-1".into(),
+            ..Default::default()
+        };
+        let req = TranscribeRequest {
+            samples: vec![0.0; 160],
+            prompt: Some("上一句话".into()),
+            temperature: 0.0,
+        };
+        let form = build_form(&provider, &req, vec![0u8; 8]).unwrap();
+        // Form 的 Debug 会列出字段名与文件信息，足以锁死「上线时到底发了什么」
+        let dump = format!("{form:?}");
+        let names = form_field_names(&dump);
+        assert_eq!(
+            names,
+            vec!["file", "model", "response_format", "temperature", "prompt"],
+            "multipart 字段集合变了，请确认这是有意为之"
+        );
+        assert!(
+            !names.contains(&"language"),
+            "应用不得自行决定识别语言：语言由识别服务负责"
+        );
+    }
+
+    /// 从 `Form` 的 Debug 输出里取顶层字段名。
+    ///
+    /// 输出形如 `parts: [("file", Part { .. }), ("model", Part { .. })]`。
+    /// 按 `", Part {` 切开后，每段的末尾正好停在字段名上（名字前面是 `("`），
+    /// 段内的 `mime: Some("audio/wav")` 之类都排在名字之后，不会被误取。
+    fn form_field_names(dump: &str) -> Vec<&str> {
+        let chunks: Vec<&str> = dump.split("\", Part {").collect();
+        chunks[..chunks.len() - 1]
+            .iter()
+            .filter_map(|chunk| {
+                let start = chunk.rfind("(\"")? + 2;
+                Some(&chunk[start..])
+            })
+            .collect()
     }
 }

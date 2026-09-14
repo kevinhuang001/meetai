@@ -14,7 +14,6 @@ export function StepDone({ draft }: { draft: Settings }) {
 
   const rows: [string, string][] = [
     ["语音识别服务", asr ? `${asr.name} · ${asr.model || "未填模型"}` : "未配置（无法开始录音）"],
-    ["识别语言", draft.asr.language === "auto" ? "自动检测" : draft.asr.language],
     [
       "AI 接口",
       draft.ai.enabled && ai ? `${ai.name} · ${ai.model || "未填模型"}` : "已关闭（只转写，不做纪要）",

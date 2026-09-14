@@ -171,6 +171,10 @@ export function StepAsr({ draft, set }: StepProps) {
             </Button>
           </div>
           <span className="dim tiny">
+            命令里的 <code>--language auto</code> 不能省：whisper-server 默认按英文识别，中文会变成英文乱码。
+            识别语言由服务端决定，应用里没有、也不需要有语言设置。
+          </span>
+          <span className="dim tiny">
             想要更省事也可以用 faster-whisper-server，它是 OpenAI 兼容接口，Base URL 填 http://localhost:8000/v1。
           </span>
         </div>

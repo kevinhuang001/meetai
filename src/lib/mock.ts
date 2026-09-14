@@ -342,8 +342,6 @@ function defaultSettings(): Settings {
       enabled: true,
       providers: [groq],
       activeProviderId: groq.id,
-      language: "auto",
-      translateToEnglish: false,
       contextPrompt: true,
       temperature: 0,
       livePreview: false,
@@ -403,10 +401,13 @@ const APP_INFO: AppInfo = {
 /* ------------------------------- 会话模拟 ------------------------------- */
 
 /** 一段像真实会议的中文对话，用于驱动 UI */
-const SCRIPT: { text: string; speaker: Speaker }[] = [
+const SCRIPT: { text: string; speaker: Speaker; suspect?: string }[] = [
   { text: "各位，我们今天主要过三件事：上季度的增长复盘、下季度的目标，还有新版本的上线节奏。", speaker: "me" },
   { text: "我先说复盘。三季度整体营收环比增长了百分之十八，主要来自企业版订阅。", speaker: "me" },
   { text: "不过客户流失率也比二季度高了两个点，我觉得这块需要单独看一下。", speaker: "others" },
+  // 演示「可疑但照常显示」：识别服务确实返回了内容，只是看起来不对。
+  // 它会标灰、不进纪要，但**不会被丢掉** —— 否则用户只会看到一个空白界面。
+  { text: "Thank you for watching!", speaker: "others", suspect: "疑似模型幻听短语" },
   { text: "对，流失主要集中在中小客户，原因统计里排第一的是上手成本太高。", speaker: "others" },
   { text: "那下季度的目标我建议定在环比增长百分之十五，把留存放在更重要的位置。", speaker: "me" },
   { text: "同意。另外新版本我们计划十一月十号发灰度，十一月二十四号全量。", speaker: "others" },
@@ -515,7 +516,6 @@ function startMockSession(req: StartSessionRequest): SessionInfo {
     durationMs: 0,
     config: {
       modelId: asrServiceLabel(settings),
-      language: req.language || settings.asr.language,
       enableMic: req.enableMic,
       enableLoopback: req.enableLoopback,
       micLabel: req.micDeviceId
@@ -525,7 +525,6 @@ function startMockSession(req: StartSessionRequest): SessionInfo {
         ? (sourceById(req.loopbackDeviceId)?.label ?? req.loopbackDeviceId)
         : (listSources().find((s) => s.kind === "loopback")?.label ?? null),
     },
-    language: null,
     error: null,
   };
 
@@ -552,7 +551,6 @@ function startMockSession(req: StartSessionRequest): SessionInfo {
     sessionId: id,
     state: "starting",
     message: "正在准备音频设备…",
-    language: null,
   } satisfies AsrStateEvent);
 
   const startTimer = window.setTimeout(() => {
@@ -561,7 +559,6 @@ function startMockSession(req: StartSessionRequest): SessionInfo {
       sessionId: id,
       state: "listening",
       message: null,
-      language: settings.asr.language === "auto" ? "zh" : settings.asr.language,
     } satisfies AsrStateEvent);
     startStreaming(s);
   }, 420);
@@ -615,7 +612,6 @@ function startStreaming(s: MockSession) {
         sessionId: id,
         state: "speech",
         message: null,
-        language: "zh",
       } satisfies AsrStateEvent);
     }, 260),
   );
@@ -636,8 +632,8 @@ function startStreaming(s: MockSession) {
         startMs,
         endMs,
         speaker: line.speaker,
-        language: "zh",
         confidence: 0.88 + Math.random() * 0.1,
+        suspect: line.suspect ?? null,
       };
       s.segments.push(seg);
       s.stats.segments = s.segments.length;
@@ -649,7 +645,6 @@ function startStreaming(s: MockSession) {
         sessionId: id,
         state: "listening",
         message: null,
-        language: "zh",
       } satisfies AsrStateEvent);
 
       s.scriptIndex += 1;
@@ -706,7 +701,6 @@ function stopMockSession(): SessionDetail {
     sessionId: s.info.id,
     state: "idle",
     message: null,
-    language: s.info.language,
   } satisfies AsrStateEvent);
   const detail = detailFrom(s);
   active = null;
@@ -860,7 +854,6 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
         sessionId: active.info.id,
         state: "paused",
         message: null,
-        language: "zh",
       } satisfies AsrStateEvent);
       return ok(sessionInfoFrom(active) as unknown as T);
     }
@@ -872,7 +865,6 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
         sessionId: active.info.id,
         state: "listening",
         message: null,
-        language: "zh",
       } satisfies AsrStateEvent);
       return ok(sessionInfoFrom(active) as unknown as T);
     }
@@ -893,13 +885,11 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
         durationMs: item.durationMs,
         config: {
           modelId: asrServiceLabel(settings),
-          language: "zh",
           enableMic: true,
           enableLoopback: true,
           micLabel: listSources().find((s) => s.kind === "microphone")?.label ?? null,
           loopbackLabel: listSources().find((s) => s.kind === "loopback")?.label ?? null,
         },
-        language: "zh",
         error: null,
         segments: [],
         summary: emptySummary(),

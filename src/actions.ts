@@ -39,7 +39,6 @@ function currentRequest(): StartSessionRequest | null {
     enableLoopback: settings.audio.enableLoopback,
     micDeviceId: settings.audio.micDeviceId,
     loopbackDeviceId: settings.audio.loopbackDeviceId,
-    language: settings.asr.language,
     saveAudio: settings.audio.saveAudio,
   };
 }
@@ -64,7 +63,7 @@ export async function startRecording(): Promise<void> {
   st.setLastSessionId(null);
   useLevelStore.getState().reset();
   usePartialStore.getState().apply(null);
-  st.setAsrState("starting", "正在准备音频设备…", null);
+  st.setAsrState("starting", "正在准备音频设备…");
   st.toast("success", "开始录音", "正在连接识别服务，请稍候…");
 }
 
@@ -81,14 +80,14 @@ export async function pauseOrResume(): Promise<void> {
 export async function stopRecording(): Promise<void> {
   const st = useStore.getState();
   if (!st.session) return;
-  st.setAsrState("stopping", "正在收尾…", st.language);
+  st.setAsrState("stopping", "正在收尾…");
 
   const detail = await guard("停止录音", () => api.stopSession());
   useLevelStore.getState().reset();
   usePartialStore.getState().apply(null);
   if (!detail) {
     st.setSession(null);
-    st.setAsrState("error", "停止录音失败", null);
+    st.setAsrState("error", "停止录音失败");
     return;
   }
 
@@ -97,7 +96,7 @@ export async function stopRecording(): Promise<void> {
   st.setSummary(detail.summary);
   st.setLastSessionId(detail.id);
   st.setLastDetail(detail);
-  st.setAsrState("idle", null, detail.language);
+  st.setAsrState("idle", null);
 
   const finalReportOnStop = st.settings?.ai.finalReportOnStop ?? false;
   if (finalReportOnStop) {
@@ -128,10 +127,7 @@ export async function importAudioFile(): Promise<void> {
     path = picked;
   }
 
-  const settings = st.settings;
-  const info = await guard("导入音频", () =>
-    api.transcribeFile(path, settings?.asr.language ?? null),
-  );
+  const info = await guard("导入音频", () => api.transcribeFile(path));
   if (!info) return;
 
   st.setSession(info);
@@ -139,7 +135,7 @@ export async function importAudioFile(): Promise<void> {
   st.setSummary(emptySummary());
   st.setFinalReport(null);
   st.setLastSessionId(null);
-  st.setAsrState("starting", "正在解码音频…", null);
+  st.setAsrState("starting", "正在解码音频…");
   useLevelStore.getState().reset();
   usePartialStore.getState().apply(null);
   st.toast("success", "导入音频", `开始转写：${path}`);

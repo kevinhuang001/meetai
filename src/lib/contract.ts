@@ -11,7 +11,6 @@
  * 1. 设置
  * ========================================================================== */
 
-export type LanguageCode = "auto" | "zh" | "en" | "ja" | "ko" | "yue" | "de" | "fr" | "es" | "ru";
 
 export interface AsrProvider {
   id: string;
@@ -23,7 +22,7 @@ export interface AsrProvider {
   apiKey: string;
   /** 模型名，例如 whisper-large-v3-turbo / whisper-1 / large-v3 */
   model: string;
-  /** 请求格式：json（最兼容）或 verbose_json（能拿到语言） */
+  /** 请求格式：json（最兼容）或 verbose_json（能拿到分段） */
   responseFormat: string;
   timeoutSecs: number;
   extraHeaders: [string, string][];
@@ -33,9 +32,6 @@ export interface AsrSettings {
   enabled: boolean;
   providers: AsrProvider[];
   activeProviderId: string;
-  /** 识别语言，auto = 自动检测 */
-  language: LanguageCode;
-  translateToEnglish: boolean;
   /** 把上一句文本作为 prompt 传给服务，提升人名/术语一致性 */
   contextPrompt: boolean;
   temperature: number;
@@ -179,8 +175,14 @@ export interface TranscriptSegment {
   startMs: number;
   endMs: number;
   speaker: Speaker;
-  language: string | null;
   confidence: number | null;
+  /**
+   * 这段结果为什么可疑（幻听 / 重复输出 / 服务没返回内容）。
+   *
+   * **有值不等于文本被丢掉** —— 文本照常显示，只是界面上会标灰提醒，
+   * 并且不参与纪要生成，避免幻觉污染摘要。
+   */
+  suspect: string | null;
 }
 
 export interface ActionItem {
@@ -230,7 +232,6 @@ export type SessionStatus = "recording" | "paused" | "finished" | "error";
 export interface SessionConfig {
   /** 识别服务描述（服务商 · 模型） */
   modelId: string;
-  language: string;
   enableMic: boolean;
   enableLoopback: boolean;
   micLabel: string | null;
@@ -245,8 +246,6 @@ export interface SessionInfo {
   /** 录音已进行的时长（毫秒，不含暂停） */
   durationMs: number;
   config: SessionConfig;
-  /** 检测/指定的识别语言 */
-  language: string | null;
   error: string | null;
 }
 
@@ -280,7 +279,6 @@ export interface StartSessionRequest {
   enableLoopback: boolean;
   micDeviceId?: string | null;
   loopbackDeviceId?: string | null;
-  language?: string | null;
   saveAudio?: boolean | null;
 }
 
@@ -358,8 +356,6 @@ export interface AsrStateEvent {
   sessionId: string;
   state: AsrStateKind;
   message: string | null;
-  /** 实际生效的识别语言（auto 时会回填检测结果） */
-  language: string | null;
 }
 
 export interface AsrSegmentEvent {
@@ -409,19 +405,6 @@ export interface AppErrorEvent {
 /* ============================================================================
  * 7. 工具
  * ========================================================================== */
-
-export const LANGUAGE_OPTIONS: { value: LanguageCode; label: string }[] = [
-  { value: "auto", label: "自动检测" },
-  { value: "zh", label: "中文" },
-  { value: "en", label: "English" },
-  { value: "yue", label: "粤语" },
-  { value: "ja", label: "日本語" },
-  { value: "ko", label: "한국어" },
-  { value: "de", label: "Deutsch" },
-  { value: "fr", label: "Français" },
-  { value: "es", label: "Español" },
-  { value: "ru", label: "Русский" },
-];
 
 export const SPEAKER_LABEL: Record<Speaker, string> = {
   me: "我",

@@ -233,7 +233,6 @@ pub struct StartSessionRequest {
     pub loopback_device_id: Option<String>,
     /// 覆盖设置里的模型
     pub model_id: Option<String>,
-    pub language: Option<String>,
     pub save_audio: Option<bool>,
 }
 
@@ -246,7 +245,6 @@ impl Default for StartSessionRequest {
             mic_device_id: None,
             loopback_device_id: None,
             model_id: None,
-            language: None,
             save_audio: None,
         }
     }
@@ -290,10 +288,7 @@ pub fn start_session(
     };
 
     // ---- 识别服务 ----
-    let mut asr = settings.asr.clone();
-    if let Some(lang) = req.language.clone().filter(|s| !s.trim().is_empty()) {
-        asr.language = lang;
-    }
+    let asr = settings.asr.clone();
     let provider = asr
         .active()
         .cloned()
@@ -303,12 +298,9 @@ pub fn start_session(
             "语音识别服务配置不完整（需要 Base URL 与模型名），请打开「设置 → 语音识别」",
         ));
     }
-    let language = asr.language.clone();
-
     let source_labels = source_labels(&mic_id, &loopback_id, req.enable_mic, req.enable_loopback);
     let config = SessionConfig {
         model_id: format!("{} · {}", provider.name, provider.model),
-        language: language.clone(),
         enable_mic: req.enable_mic,
         enable_loopback: req.enable_loopback,
         mic_label: source_labels.0,
@@ -323,7 +315,6 @@ pub fn start_session(
         .unwrap_or_else(|| default_title(now_ms(), "会议"));
 
     let mut session = Session::new(title, config);
-    session.language = if asr.language_arg().is_none() { None } else { Some(asr.language.clone()) };
     session.summary.error = None;
 
     // ---- 录音文件 ----
@@ -599,11 +590,7 @@ pub fn export_session(app: AppHandle, id: String, format: String, path: String) 
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn transcribe_file(
-    app: AppHandle,
-    path: String,
-    language: Option<String>,
-) -> AppResult<SessionInfo> {
+pub async fn transcribe_file(app: AppHandle, path: String) -> AppResult<SessionInfo> {
     let settings = {
         let state = app.state::<AppState>();
         state.ensure_idle()?;
@@ -634,10 +621,7 @@ pub async fn transcribe_file(
         .unwrap_or("导入的音频");
     let title = format!("导入：{}", crate::util::truncate_chars(name, 60));
 
-    let mut asr = settings.asr.clone();
-    if let Some(lang) = language.filter(|s| !s.trim().is_empty()) {
-        asr.language = lang;
-    }
+    let asr = settings.asr.clone();
     let provider = asr
         .active()
         .cloned()
@@ -648,14 +632,12 @@ pub async fn transcribe_file(
 
     let config = SessionConfig {
         model_id: format!("{} · {}", provider.name, provider.model),
-        language: asr.language.clone(),
         enable_mic: false,
         enable_loopback: false,
         mic_label: None,
         loopback_label: None,
     };
-    let mut session = Session::new(title, config);
-    session.language = asr.language_arg().map(str::to_string);
+    let session = Session::new(title, config);
 
     let session = Arc::new(parking_lot::Mutex::new(session));
     let state = app.state::<AppState>();

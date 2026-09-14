@@ -95,8 +95,10 @@ git clone --depth 1 https://github.com/ggml-org/whisper.cpp && cd whisper.cpp
 cmake -B build -DWHISPER_BUILD_SERVER=ON            # 有 N 卡加 -DGGML_CUDA=ON
 cmake --build build -j --target whisper-server
 ./models/download-ggml-model.sh base                 # 中文建议 base 起步，追求质量用 large-v3-turbo
-./build/bin/whisper-server -m models/ggml-base.bin --host 127.0.0.1 --port 8080
+./build/bin/whisper-server -m models/ggml-base.bin --host 127.0.0.1 --port 8080 --language auto
 
+#                                             ↑ 这一项别省：whisper-server 默认按英文识别，
+#                                               中文语音会被转成英文乱码（详见「识别语言归谁管」）
 # ② 纪要服务：Ollama
 ollama pull qwen2.5:7b
 ollama serve                                          # 默认就在 127.0.0.1:11434
@@ -217,7 +219,7 @@ git clone --depth 1 https://github.com/ggml-org/whisper.cpp && cd whisper.cpp
 cmake -B build -DWHISPER_BUILD_SERVER=ON -DGGML_CUDA=ON   # 不用 GPU 就去掉 -DGGML_CUDA=ON
 cmake --build build -j
 ./models/download-ggml-model.sh large-v3-turbo
-./build/bin/whisper-server -m models/ggml-large-v3-turbo.bin --port 8080
+./build/bin/whisper-server -m models/ggml-large-v3-turbo.bin --port 8080 --language auto
 
 # 方案 B：faster-whisper-server（Python，GPU 支持好）
 docker run -p 8000:8000 -v ~/.cache/huggingface:/root/.cache/huggingface \
@@ -311,6 +313,25 @@ MeetingHear 自检
 - 解析失败**不推进已覆盖位置**，下一轮自动重试，不会丢内容
 
 ---
+
+### 4. 识别语言归服务端管，应用不碰
+
+应用**没有**「识别语言」设置项，请求里也**不发** `language` 字段。原因是一次真实事故：
+
+- whisper.cpp server 的 `language` 默认值是 `en`；
+- 早先版本把「语言」做成了应用自己的设置项，默认「自动」时干脆不发该字段；
+- 于是中文语音被按英文硬识别，模型吐出一段英文幻觉（`Welcome to the video...`）；
+- 更糟的是这段幻觉随后被「幻听过滤器」丢弃，**界面上一个字都没有** ——
+  用户完全无法判断是程序坏了、麦克风没声音，还是服务配错了。
+
+现在两条约定：
+
+1. **语言由识别服务配置**。whisper.cpp server 加 `--language auto`；OpenAI / Groq 等
+   云端接口本身就自动检测，不用配。
+2. **识别结果只标注、不丢弃**。可疑段（幻听 / 退化重复 / 服务没返回内容）照常显示在
+   转写里，只是标灰加标记，并且不参与纪要生成 —— 幻觉文本足以把整份纪要带偏。
+
+「服务在工作但没有结果」和「程序卡死」必须在界面上能区分开，这是这条规则的全部意义。
 
 ## 七、系统内录与平台依赖
 
@@ -408,7 +429,7 @@ pnpm check            # typecheck + test:rust
 mkdir -p .e2e/audio
 curl -L -o .e2e/audio/jfk.wav \
   https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav
-./whisper-server -m models/ggml-tiny.bin --port 8090 &   # 见上文「快速开始」
+./whisper-server -m models/ggml-tiny.bin --port 8090 --language auto &   # 见上文「快速开始」
 pnpm test:e2e         # 8 条端到端测试（真实识别服务 + 真实 LLM + 真实采集）
 ```
 

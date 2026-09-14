@@ -40,7 +40,7 @@ async function bootstrap(): Promise<void> {
 
   if (active) {
     st.setSession(active);
-    st.setAsrState(active.status === "paused" ? "paused" : "listening", null, active.language);
+    st.setAsrState(active.status === "paused" ? "paused" : "listening", null);
     const detail = await guard("恢复会话内容", () => api.getSession(active.id));
     if (detail) {
       st.setSegments(detail.segments);
@@ -74,12 +74,10 @@ export default function App() {
       const list = await Promise.all([
         subscribe<AsrStateEvent>(EV.state, (e) => {
           const st = useStore.getState();
-          const language = e.language ?? st.language;
           // mock / 真实后端会在每个 partial 周期都发一次 state，
           // 这里做去重，避免 4Hz 的无效 state 更新把无关组件一起重渲染。
-          const same =
-            st.asrState === e.state && st.asrMessage === e.message && st.language === language;
-          if (!same) st.setAsrState(e.state, e.message, language);
+          const same = st.asrState === e.state && st.asrMessage === e.message;
+          if (!same) st.setAsrState(e.state, e.message);
           if (st.session && st.session.id === e.sessionId) {
             const status =
               e.state === "paused"
@@ -89,8 +87,8 @@ export default function App() {
                   : e.state === "idle"
                     ? "finished"
                     : "recording";
-            if (st.session.status !== status || st.session.language !== language) {
-              st.patchSession({ status, language });
+            if (st.session.status !== status) {
+              st.patchSession({ status });
             }
           }
         }),

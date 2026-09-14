@@ -17,4 +17,4 @@ pub use provider::{presets, provider_from_preset, AsrPreset};
 
 /// 文本层的幻听/退化输出过滤（与具体识别服务无关）
 pub mod filter;
-pub use filter::is_likely_hallucination;
+pub use filter::{is_suspect, suspect_reason};

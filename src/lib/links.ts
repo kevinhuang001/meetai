@@ -70,4 +70,5 @@ export const OLLAMA_PAGE: ConsoleLink = {
 };
 
 /** 本机 whisper.cpp server 的启动命令示例（向导第 2 步与设置里共用） */
-export const WHISPER_CPP_CMD = "./build/bin/whisper-server -m models/ggml-base.bin --port 8080";
+export const WHISPER_CPP_CMD =
+  "./build/bin/whisper-server -m models/ggml-base.bin --port 8080 --language auto";

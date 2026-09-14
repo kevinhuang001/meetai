@@ -26,7 +26,7 @@ pub struct AsrProvider {
     pub api_key: String,
     /// 模型名，例如 whisper-1 / whisper-large-v3-turbo / large-v3
     pub model: String,
-    /// 请求格式：json（最兼容）或 verbose_json（能拿到语言与分段）
+    /// 请求格式：json（最兼容）或 verbose_json（能拿到分段）
     pub response_format: String,
     pub timeout_secs: u32,
     /// 额外请求头，例如自建网关需要的鉴权字段
@@ -112,9 +112,6 @@ pub struct AsrSettings {
     pub enabled: bool,
     pub providers: Vec<AsrProvider>,
     pub active_provider_id: String,
-    /// "auto" 表示自动检测
-    pub language: String,
-    pub translate_to_english: bool,
     /// 把上一句已确认文本作为 prompt 传给服务，提升人名/术语一致性
     /// （仅部分服务支持，OpenAI 兼容接口支持 prompt 字段）
     pub context_prompt: bool,
@@ -134,8 +131,6 @@ impl Default for AsrSettings {
             enabled: true,
             active_provider_id: providers[0].id.clone(),
             providers,
-            language: "auto".into(),
-            translate_to_english: false,
             context_prompt: true,
             temperature: 0.0,
             live_preview: false,
@@ -155,16 +150,6 @@ impl AsrSettings {
     /// 是否具备开始转写的条件
     pub fn ready(&self) -> bool {
         self.enabled && self.active().map(|p| p.is_usable()).unwrap_or(false)
-    }
-
-    /// `None` = 让服务自动检测语言
-    pub fn language_arg(&self) -> Option<&str> {
-        let l = self.language.trim();
-        if l.is_empty() || l.eq_ignore_ascii_case("auto") {
-            None
-        } else {
-            Some(l)
-        }
     }
 
     pub fn sanitize(&mut self) {
@@ -618,12 +603,17 @@ mod tests {
 
     #[test]
     fn settings_roundtrip_with_missing_fields() {
-        // 模拟旧版本配置文件（缺少 audio/general）
-        let text = r#"{"version":1,"asr":{"language":"zh"}}"#;
+        // 模拟旧版本配置文件：缺少 audio/general，且带着早已废弃的 language 字段。
+        // 未知字段必须被安静忽略，不能让老用户升级后启动失败。
+        let text = r#"{"version":1,"asr":{"language":"zh","translateToEnglish":true}}"#;
         let s: Settings = serde_json::from_str(text).unwrap();
-        assert_eq!(s.asr.language, "zh");
         assert!(!s.vad.energy_threshold_db.is_nan());
         assert!(s.audio.enable_mic);
+
+        // 再写一遍时，废弃字段不再出现（语言归识别服务管，应用不存）
+        let out = serde_json::to_string(&s).unwrap();
+        assert!(!out.contains("language"));
+        assert!(!out.contains("translateToEnglish"));
     }
 
     #[test]
@@ -693,10 +683,29 @@ mod tests {
     }
 
     #[test]
-    fn language_auto_maps_to_none() {
-        let mut a = AsrSettings::default();
-        assert!(a.language_arg().is_none());
-        a.language = "zh".into();
-        assert_eq!(a.language_arg(), Some("zh"));
+    fn app_never_sends_a_language_field() {
+        // 语言是识别服务自己的事：应用只管上传音频。
+        // （踩过的事故：whisper.cpp server 的 language 默认是 en，
+        //   应用一旦自己决定语言，就会把中文按英文识别。）
+        let req = crate::asr::client::TranscribeRequest {
+            samples: vec![0.0; 160],
+            prompt: None,
+            temperature: 0.0,
+        };
+        let form = crate::asr::client::build_form(
+            &AsrProvider {
+                model: "whisper-1".into(),
+                ..Default::default()
+            },
+            &req,
+            vec![0u8; 4],
+        )
+        .expect("应能构建表单");
+        let body = format!("{form:?}");
+        assert!(
+            !body.contains("language"),
+            "应用不得自行决定识别语言，表单里不应有 language 字段"
+        );
+        assert!(body.contains("audio.wav"), "必须包含音频字段");
     }
 }

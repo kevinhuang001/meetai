@@ -568,6 +568,27 @@ select.input {
   border-left-color: var(--accent);
 }
 
+/* 可疑段：识别服务确实返回了内容，只是看起来不对（幻听/重复/空结果）。
+   这里刻意保留文本、只做视觉降级 —— 丢掉内容会让用户完全不知道发生了什么。 */
+.t-row.suspect .t-text {
+  color: var(--mute);
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in srgb, var(--warn) 60%, transparent);
+  text-underline-offset: 0.2em;
+}
+.t-suspect {
+  flex: none;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: 0.25rem;
+  padding: 0 0.3rem;
+  white-space: nowrap;
+  cursor: help;
+  align-self: center;
+}
+
 .t-time {
   flex: none;
   width: 4.25rem;
